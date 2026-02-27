@@ -1,0 +1,22 @@
+1. create 2 prompts for different purposes & personas (1) Product Manager - to create PRD and (2) Engineering Manager to help us create Tech spec
+2. provide high level to detailed requirement to the PM for "him" to create the PRD
+	2.1 make sure you review PRD first
+3. provide high level to detailed requirement to the EM for "him" to create the PRD
+	3.1 create Tech Spec (with EM) 
+	3.2 specify the application will have 3 environments Dev (Local), Testing (alicloud), Production (alicloud) and we will using separate .env file. 
+
+4. Copy PRD & Tech Spec to Docs folder inside the project directory.
+5. Copy standard CSS file to Frontend folder
+6. start vibe coding with cursor
+	6.1 ask cursor to review PRD & Tech Spec
+	6.2 ask cursor to create readme.md & technical-architecture.md*
+*if cursor cannot read the docx, ask cursor to install phyton to read docx. 
+	6.3 review readme & tech arch doc
+		- database : postgree
+		- backend : node.js
+		- frontend : react.js
+7. start building, make sure to always use docker. 
+8. once ready for testing, ask cursor to do comprehensive testing 
+	7.1 ask cursor to provide the comprehensive testing scenario, make sure the scenario is acceptable
+	7.2 ask cursor to run the comprehensive testing  and share the results. 
+9. after testing, ask cursor to run comprehensive penetration testing & security architecture review and share the result. 

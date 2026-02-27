@@ -1,0 +1,11 @@
+user & role management
+- business unit
+
+apps management
+- CRUD apps
+- assign to business unit / all 
+
+securing the token don't past it through link, put it api header. 
+
+
+
