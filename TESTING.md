@@ -170,6 +170,7 @@ Use this guide to verify all implemented phases. Run the app first (e.g. `start.
 | **C** | /admin → /admin/domains; sidebar with 5 sections (incl. Password policy); Applications has title and description; non-Admin blocked. |
 | **D** | SSO bridge URL has no token in query; form POSTs token in body; audit_logs for CRUD and LOGIN; sso_access_logs for SSO. |
 | **Password expiry** | Admin → Password policy; set days; login expired → change-password-expired; in-app Change password. |
+| **Security policy** | Admin → Security policy: complexity, history, lockout; login 423 when locked; Admin → Users → Unlock; change-password rejects reuse. |
 
 ---
 
@@ -204,6 +205,31 @@ Use this guide to verify all implemented phases. Run the app first (e.g. `start.
 
 1. In Admin → Password policy, set **0** and Save.
 2. Log in with any user (including one that would have been expired). **Expected:** Login succeeds; no redirect to change-password-expired.
+
+---
+
+## Security policy (complexity, history, lockout)
+
+### F.1 Admin: Security policy section
+
+1. Log in as **Admin** → **Admin** → **Security policy** (or Password policy).
+2. **Expected:** Expiry days, **min length**, **complexity** checkboxes (uppercase, lowercase, number, symbol), **password history count**, **max login attempts**, **lockout duration**. Save and confirm values persist (GET /api/settings/password-policy).
+
+### F.2 Complexity: weak password rejected
+
+1. Set min length 8 and require symbol; try to register (or add user) with a password that has no symbol (e.g. `Password1`). **Expected:** 400; error about complexity.
+2. Register with a compliant password (e.g. `StrongPass1!`). **Expected:** Success.
+
+### F.3 Lockout and Unlock
+
+1. Set **max login attempts** to 2 and **lockout duration** to e.g. 30 minutes.
+2. As a test user, enter wrong password twice. **Expected:** Third attempt (even with correct password) returns **423** / "Account locked" (or equivalent in UI).
+3. As **Admin** → **Users**, find that user. **Expected:** Status "Locked" and **Unlock** button. Click **Unlock**.
+4. Log in as that user with correct password. **Expected:** 200 / success.
+
+### F.4 Password reuse rejected
+
+1. Set **password history count** to 2. As a user, change password to **A**, then to **B**, then try to change to **A** again. **Expected:** 400 "Cannot reuse a recent password" (or equivalent).
 
 ---
 

@@ -33,3 +33,6 @@ Thumbs.db
 # Temp
 *.tmp
 .cache/
+temp_*/
+temp_*.zip
+temp_*.txt

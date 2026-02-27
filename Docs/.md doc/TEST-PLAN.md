@@ -100,19 +100,6 @@ This document defines **unit**, **integration**, and **end-to-end (E2E)** test s
 | I-23 | **PUT /api/settings/password-policy** — Admin, valid | Body { password_expiry_days: 90 } | 200; { password_expiry_days: 90 } |
 | I-24 | **PUT /api/settings/password-policy** — out of range | password_expiry_days &lt; 0 or &gt; 365 | 400 |
 
-### 3.2a Security policy (complexity, history, lockout)
-
-| ID | Scenario | Request | Expected |
-|----|----------|---------|----------|
-| I-24a | **POST /api/auth/register** — complexity: weak password rejected | Policy requires symbol; register with password without symbol | 400; error matches complexity |
-| I-24b | **POST /api/auth/change-password** — reuse of recent password rejected | History count &gt; 0; change to A, then B, then try A again | 400 "Cannot reuse a recent password" |
-| I-24c | **POST /api/auth/login** — lockout after N failures | Wrong password N times (N = max_login_attempts) | 423; code ACCOUNT_LOCKED; locked_until |
-| I-24d | **POST /api/auth/login** — correct password when locked still 423 | After lockout, login with correct password | 423 ACCOUNT_LOCKED |
-| I-24e | **POST /api/users/:id/unlock** — Admin unlock then login | Admin calls unlock; user logs in with correct password | 200; token |
-| I-24f | **POST /api/auth/login** — success resets failed attempts | Fail N−1 times, then success; then fail N times again | First success 200; after N fails 423 |
-| I-24g | **GET /api/users** — includes locked_until | Admin GET /api/users | Each user has locked_until (null or timestamp) |
-| I-24h | **GET/PUT /api/settings/password-policy** — new fields | Admin GET/PUT | min_length, complexity toggles, history_count, max_login_attempts, lockout_duration_mins |
-
 ### 3.3 Domain whitelist (User Story 2)
 
 | ID | Scenario | Request | Expected |

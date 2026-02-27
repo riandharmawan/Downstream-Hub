@@ -1,6 +1,6 @@
 # Downstream Hub — Technical Architecture
 
-This document describes the system architecture, data model, SSO design, security, logging, and CI/CD for **Downstream Hub**, aligned with the [Downstream Hub Tech Spec](Docs/Downstream%20Hub%20Tech%20Spec.docx) (v2.1) and [PRD](Docs/Downstream%20Hub%20PRD.docx) (v2.0).
+This document describes the system architecture, data model, SSO design, security, logging, and CI/CD for **Downstream Hub**, aligned with the [Downstream Hub Tech Spec](Docs/Downstream%20Hub%20Tech%20Spec.docx) (v3.2) and [PRD](Docs/Downstream%20Hub%20PRD.docx) (v3.2).
 
 ### Implementation Phases (Completed)
 
@@ -22,7 +22,7 @@ The application follows a **decoupled Client–Server** architecture to ensure s
 | Layer | Technology | Responsibility |
 |-------|------------|----------------|
 | **Frontend** | React.js (SPA) | Grid View (app discovery **filtered by BU/Global**), Admin Console with **sub-menus**: Domains, Business Units, Users, Applications (see §1.3). |
-| **Backend** | Node.js / Express.js | REST API: authentication (**domain whitelist**), application metadata CRUD (**Target BU**, icon), **BU** and **Allowed Domains** CRUD, SSO token generation (**header-based**, not URL). |
+| **Backend** | Node.js / Express.js | REST API: authentication (**domain whitelist**), application metadata CRUD (**Target BU**, icon), **BU** and **Allowed Domains** CRUD, SSO token generation (**header-based**, not URL), **security policy enforcement** (password complexity, history, account lockout). |
 | **Database** | PostgreSQL (Alibaba Cloud RDS) | Users (with **business_unit_id**), applications (with **target_bu_id**, icon_url), **allowed_domains**, **business_units**, audit_logs, **sso_access_logs**. |
 | **Caching** | Redis (ApsaraDB) | Short-lived SSO session tokens to meet the **&lt; 200 ms** authentication latency target. |
 
@@ -49,8 +49,9 @@ The Admin UI is split into four sub-routes, selected via a sidebar:
 |-----------------|------------------------|-------------------------------------------------------------------------|
 | **Domains**     | `/admin/domains`       | CRUD for allowed email domains (registration whitelist).                |
 | **Business Units** | `/admin/business-units` | CRUD for BUs (departments).                                          |
-| **Users**       | `/admin/users`        | List users and assign/update each user’s Business Unit.                 |
+| **Users**       | `/admin/users`        | List users, assign/update each user’s Business Unit, **unlock locked accounts**.                 |
 | **Applications** | `/admin/applications` | CRUD for applications (name, icon, description, target URL, Target BU). |
+| **Security policy** | Admin → Security policy (Password policy section) | Set **password expiry**, **min length**, **complexity** (upper/lower/number/symbol), **password history count**, **max login attempts**, **lockout duration**. |
 
 Visiting `/admin` redirects to `/admin/domains`. Only the selected section’s content is shown; the sidebar highlights the active sub-menu.
 
@@ -107,6 +108,8 @@ The following entities support the required User Stories (PRD v2.0 / Tech Spec v
 | `role` | Enum | `Admin` \| `Employee`. |
 | `business_unit_id` | UUID (nullable, FK → business_units) | User’s department; used to filter the dashboard app list. |
 | `password_changed_at` | Timestamp (nullable) | When the password was last set; used for password expiry. |
+| `failed_login_attempts` | INT NOT NULL DEFAULT 0 | Incremented on wrong password; reset on success or Admin unlock. |
+| `locked_until` | Timestamptz (nullable) | When lockout ends; set when failed_login_attempts ≥ max_login_attempts; cleared by Admin unlock or after lockout_duration_mins. |
 | `deleted_at` | Timestamp (nullable) | Set on soft delete; see §3.7. |
 
 - **Admins** can access the Admin Console (app CRUD, Allowed Domains, Business Units, user BU assignment, **Password policy**); **Employees** only see the filtered Grid and use SSO.
@@ -117,9 +120,25 @@ The following entities support the required User Stories (PRD v2.0 / Tech Spec v
 |--------|------|------|
 | `id` | INT (PK) | Single row (id = 1). |
 | `password_expiry_days` | INT NOT NULL | 0 = disabled; &gt; 0 = user must change password within this many days of `password_changed_at`. |
+| `min_password_length` | INT NOT NULL DEFAULT 6 | Minimum length (6–128). |
+| `require_uppercase` / `require_lowercase` / `require_number` / `require_symbol` | BOOLEAN NOT NULL | When true, password must contain at least one of each. |
+| `password_history_count` | INT NOT NULL DEFAULT 5 | 0 = disable reuse check; otherwise last N hashes stored; change-password rejects reuse. |
+| `max_login_attempts` | INT NOT NULL DEFAULT 5 | After this many wrong logins, account is locked. |
+| `lockout_duration_mins` | INT NOT NULL DEFAULT 30 | Lockout duration; Admin can unlock earlier. |
 | `updated_at` | Timestamp | Last policy change. |
 
-- **GET/PUT /api/settings/password-policy** (Admin only) read and update this row. Audit log records policy changes.
+- **GET/PUT /api/settings/password-policy** (Admin only) read and update this row (all fields). Audit log records policy changes.
+
+### 3.3b Password History Table (user_password_history)
+
+| Column | Type | Notes |
+|--------|------|------|
+| `id` | UUID (PK) | gen_random_uuid(). |
+| `user_id` | UUID NOT NULL (FK → users) | User whose password was changed. |
+| `password_hash` | VARCHAR(255) NOT NULL | Hash of a previous password. |
+| `created_at` | Timestamptz NOT NULL | When that password was superseded. |
+
+- Used to enforce **no reuse of last N passwords** on change-password (and change-password-expired). After each change, current hash is appended and rows are trimmed to last N per user (index on user_id, created_at DESC).
 
 ### 3.4 Applications Table
 
@@ -138,7 +157,7 @@ The following entities support the required User Stories (PRD v2.0 / Tech Spec v
 | Field | Description |
 |-------|-------------|
 | `actor_id` | UUID of the Admin who performed the action. |
-| `action_type` | CREATE, UPDATE, DELETE (or LOGIN where applicable). |
+| `action_type` | CREATE, UPDATE, DELETE, LOGIN, PASSWORD_CHANGE, **UNLOCK** (when Admin unlocks a user). |
 | `target_entity` | Entity type and identifier (e.g. application, allowed_domain, business_unit, user). |
 | `payload_before` | JSON snapshot before the change. |
 | `payload_after` | JSON snapshot after the change. |
@@ -179,8 +198,8 @@ All core tables support **soft delete** via a nullable **`deleted_at`** (TIMESTA
 
 ### 4.1 Identity Validation (Registration)
 
-- On **register**, the backend accepts `email`, `password`, `password_retype`, and optional `business_unit_id`. It requires `password === password_retype` (400 if not) and extracts the email domain (e.g. `user@kpn-corp.com` → `kpn-corp.com`) to check against the **allowed_domains** table.
-- If the domain is **not** in the whitelist, the API responds with **400** and message **"Email domain not authorized."** and does not create the user. If `business_unit_id` is provided, it must reference an active (non–soft-deleted) business unit.
+- On **register**, the backend accepts `email`, `password`, `password_retype`, and optional `business_unit_id`. Password must meet **complexity** rules from policy (min length and, when enabled, at least one of upper/lower/number/symbol). It requires `password === password_retype` (400 if not) and extracts the email domain (e.g. `user@kpn-corp.com` → `kpn-corp.com`) to check against the **allowed_domains** table.
+- If the domain is **not** in the whitelist, the API responds with **400** and message **"Email domain not authorized."** and does not create the user. If `business_unit_id` is provided, it must reference an active (non–soft-deleted) business unit. On **change-password** (and change-password-expired), the new password must not match the **current** or any of the **last N** hashes in **user_password_history** (N = password_history_count).
 - The registration UI is supplied with active BUs via unauthenticated **`GET /api/auth/registration-options`** (returns `{ business_units }`). Only Admins can add/remove allowed domains (CRUD). **Domain lockout mitigation:** the API does not allow deleting the last allowed domain.
 
 ### 4.2 Access Control (Dashboard)
@@ -190,12 +209,13 @@ All core tables support **soft delete** via a nullable **`deleted_at`** (TIMESTA
   - `applications.target_bu_id = current_user.business_unit_id`
 - The backend endpoint **`GET /api/applications/for-me`** applies this filter using the authenticated user’s `business_unit_id` (loaded from the database). **`GET /api/auth/me`** returns the current user with `business_unit_id` and `business_unit_name`; the dashboard UI shows the BU in the header when set.
 
-### 4.2a Password Expiry
+### 4.2a Password and Security Policy (Expiry, Complexity, History, Lockout)
 
-- **Admin → Password policy:** Admins set **password_expiry_days** (0 = disabled, 1–365 = days). Stored in **password_policy** table.
-- **Login:** After validating email and password, the API checks whether **password_expiry_days** &gt; 0 and `password_changed_at + password_expiry_days` is in the past. If expired, login returns **403** with `code: PASSWORD_EXPIRED`; no token is issued. The frontend redirects to **/change-password-expired**.
-- **Change password (expired):** **POST /api/auth/change-password-expired** (no auth) accepts email, current password, new password, confirm; updates **password_hash** and **password_changed_at**; returns token so the user can be signed in immediately.
-- **Change password (authenticated):** **POST /api/auth/change-password** (with auth) allows a logged-in user to change their own password. **PASSWORD_CHANGE** is written to **audit_logs**.
+- **Admin → Password policy (Security policy):** Admins set **password_expiry_days** (0 = disabled, 1–365), **min_password_length**, **complexity** toggles (upper/lower/number/symbol), **password_history_count**, **max_login_attempts**, **lockout_duration_mins**. Stored in **password_policy** table.
+- **Login:** Before password check, if user exists and **locked_until** is set and **now() &lt; locked_until**, return **423** with `code: ACCOUNT_LOCKED` and optional `locked_until`; do not increment attempts. After validating email and password, the API checks whether **password_expiry_days** &gt; 0 and `password_changed_at + password_expiry_days` is in the past. If expired, login returns **403** with `code: PASSWORD_EXPIRED`; no token is issued. The frontend redirects to **/change-password-expired**. **Wrong password:** increment **failed_login_attempts**; if new value ≥ **max_login_attempts**, set **locked_until = now() + lockout_duration_mins**; return 401. **Success:** set **failed_login_attempts = 0**, **locked_until = null**.
+- **Change password (expired):** **POST /api/auth/change-password-expired** (no auth) accepts email, current password, new password, confirm; validates complexity and history; updates **password_hash** and **password_changed_at**; returns token so the user can be signed in immediately.
+- **Change password (authenticated):** **POST /api/auth/change-password** (with auth) validates new password against complexity and history; allows a logged-in user to change their own password. **PASSWORD_CHANGE** is written to **audit_logs**.
+- **Admin unlock:** **POST /api/users/:id/unlock** (Admin only) sets **failed_login_attempts = 0** and **locked_until = null**; audit **UNLOCK**.
 
 ### 4.3 SSO Hand-off: Token in Header (Not URL)
 
@@ -223,6 +243,8 @@ To avoid token exposure in browser history and server logs, the Hub **must not**
 
 ## 5. Security & Risk Mitigation
 
+A detailed **penetration test and security report** (findings fixed vs open) is maintained in **[Docs/PENTEST-REPORT.md](Docs/PENTEST-REPORT.md)**.
+
 | Measure | Description |
 |---------|-------------|
 | **Token expiration** | SSO tokens expire within **60 seconds** to prevent replay attacks. |
@@ -231,6 +253,8 @@ To avoid token exposure in browser history and server logs, the Hub **must not**
 | **Domain lockout** | Safeguard so Super Admins are not locked out: e.g. do not allow deletion of an allowed domain if it would leave zero Admins able to log in, or prevent deleting the last allowed domain. |
 | **Secrets / Encryption** | Sensitive environment variables (Database URLs, SSO Private Keys) are injected via **Alibaba Cloud KMS** during the CI/CD build phase; they are not committed to the repo. |
 | **Validation** | Admin input (e.g. `target_url`, domain) is validated (URL format, length); delete actions use a **confirmation modal** to avoid accidental removal. |
+| **Account lockout** | After X failed logins (configurable), account is locked for Y minutes; Admin can unlock; reduces brute-force risk. |
+| **Password complexity and history** | Configurable min length and character types; last X passwords cannot be reused (stored in user_password_history). |
 
 ---
 
@@ -289,6 +313,8 @@ Logging-specific keys are added to `.env` files so Dev logs do not clutter Produ
 |---------|-------------|
 | **Tamper-proofing** | Audit logs are **append-only**. No user, including Admins, has **Delete** permissions on the `audit_logs` table. |
 | **Alerting** | Real-time alerts via **Alibaba Cloud SLS** for repeated failed login attempts or unauthorized attempts to access the Admin Console. |
+| **Account lockout** | After X failed logins (configurable), account is locked for Y minutes or until Admin unlock; enforced in login flow. |
+| **Password history** | Last X password hashes stored; change-password rejects reuse of recent passwords. |
 
 ---
 

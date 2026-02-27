@@ -1,18 +1,92 @@
 /**
- * Password policy (single row). password_expiry_days: 0 = disabled, >0 = must change after N days.
+ * Password policy (single row). password_expiry_days, complexity, history, lockout.
+ * New columns have defaults for backward compatibility.
  */
+const DEFAULTS = {
+  password_expiry_days: 0,
+  min_password_length: 6,
+  require_uppercase: true,
+  require_lowercase: true,
+  require_number: true,
+  require_symbol: true,
+  password_history_count: 5,
+  max_login_attempts: 5,
+  lockout_duration_mins: 30,
+};
+
 async function get(db) {
   const { rows } = await db.query(
-    'SELECT password_expiry_days FROM password_policy WHERE id = 1'
+    `SELECT password_expiry_days, min_password_length, require_uppercase, require_lowercase,
+            require_number, require_symbol, password_history_count, max_login_attempts, lockout_duration_mins
+     FROM password_policy WHERE id = 1`
   );
-  return rows[0] || { password_expiry_days: 0 };
+  const row = rows[0];
+  if (!row) return { ...DEFAULTS };
+  return {
+    password_expiry_days: row.password_expiry_days ?? DEFAULTS.password_expiry_days,
+    min_password_length: row.min_password_length ?? DEFAULTS.min_password_length,
+    require_uppercase: row.require_uppercase ?? DEFAULTS.require_uppercase,
+    require_lowercase: row.require_lowercase ?? DEFAULTS.require_lowercase,
+    require_number: row.require_number ?? DEFAULTS.require_number,
+    require_symbol: row.require_symbol ?? DEFAULTS.require_symbol,
+    password_history_count: row.password_history_count ?? DEFAULTS.password_history_count,
+    max_login_attempts: row.max_login_attempts ?? DEFAULTS.max_login_attempts,
+    lockout_duration_mins: row.lockout_duration_mins ?? DEFAULTS.lockout_duration_mins,
+  };
 }
 
-async function update(db, { password_expiry_days }) {
-  const days = Math.max(0, Math.min(365, parseInt(String(password_expiry_days), 10) || 0));
+async function update(db, payload) {
+  const updates = [];
+  const values = [];
+  let idx = 1;
+
+  if (payload.password_expiry_days !== undefined) {
+    const days = Math.max(0, Math.min(365, parseInt(String(payload.password_expiry_days), 10) || 0));
+    updates.push(`password_expiry_days = $${idx++}`);
+    values.push(days);
+  }
+  if (payload.min_password_length !== undefined) {
+    const v = Math.max(6, Math.min(128, parseInt(String(payload.min_password_length), 10) || 6));
+    updates.push(`min_password_length = $${idx++}`);
+    values.push(v);
+  }
+  if (payload.require_uppercase !== undefined) {
+    updates.push(`require_uppercase = $${idx++}`);
+    values.push(!!payload.require_uppercase);
+  }
+  if (payload.require_lowercase !== undefined) {
+    updates.push(`require_lowercase = $${idx++}`);
+    values.push(!!payload.require_lowercase);
+  }
+  if (payload.require_number !== undefined) {
+    updates.push(`require_number = $${idx++}`);
+    values.push(!!payload.require_number);
+  }
+  if (payload.require_symbol !== undefined) {
+    updates.push(`require_symbol = $${idx++}`);
+    values.push(!!payload.require_symbol);
+  }
+  if (payload.password_history_count !== undefined) {
+    const v = Math.max(0, Math.min(24, parseInt(String(payload.password_history_count), 10) || 0));
+    updates.push(`password_history_count = $${idx++}`);
+    values.push(v);
+  }
+  if (payload.max_login_attempts !== undefined) {
+    const v = Math.max(1, Math.min(10, parseInt(String(payload.max_login_attempts), 10) || 5));
+    updates.push(`max_login_attempts = $${idx++}`);
+    values.push(v);
+  }
+  if (payload.lockout_duration_mins !== undefined) {
+    const v = Math.max(1, Math.min(1440, parseInt(String(payload.lockout_duration_mins), 10) || 30));
+    updates.push(`lockout_duration_mins = $${idx++}`);
+    values.push(v);
+  }
+
+  if (updates.length === 0) return get(db);
+  values.push(1);
   await db.query(
-    'UPDATE password_policy SET password_expiry_days = $1, updated_at = now() WHERE id = 1',
-    [days]
+    `UPDATE password_policy SET ${updates.join(', ')}, updated_at = now() WHERE id = $${idx}`,
+    values
   );
   return get(db);
 }

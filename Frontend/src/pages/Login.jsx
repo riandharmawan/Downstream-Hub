@@ -24,6 +24,11 @@ export default function Login() {
         navigate('/change-password-expired', { state: { email }, replace: true });
         return;
       }
+      if (err.status === 423 && err.code === 'ACCOUNT_LOCKED') {
+        const until = err.locked_until ? new Date(err.locked_until).toLocaleString() : '';
+        setError(err.error ? `${err.error} Try again after ${until || 'the lockout period'} or contact an administrator.` : 'Account locked. Try again later or contact an administrator.');
+        return;
+      }
       setError(err.error || 'Login failed');
     } finally {
       setSubmitting(false);

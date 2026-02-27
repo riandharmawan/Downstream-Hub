@@ -34,21 +34,10 @@ This installs Jest and Supertest (and any other dependencies in `backend/package
 
 ### 2. (Optional) Configure database for tests
 
-If you have a database you want tests to use (so DB-dependent and security-policy tests run):
+If you have a database you want tests to use:
 
-**Easiest:** Add **`DATABASE_URL`** to your **project root `.env`** file (the same folder as `start.bat`). The test suite loads that file when you run `npm test` from `backend/`, so you don’t need to set anything in the terminal.
-
-Use the **same** database your app uses. Format:
-
-```
-DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DATABASE_NAME
-```
-
-- If you run the app with **Docker** (`start.bat`): the app uses the Postgres container. Use the same user, password, and database as in `.env` (e.g. `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`). From your **PC**, host is `localhost` and port is `POSTGRES_PORT` (often `5433` if you have another Postgres on 5432). Example:
-
-  `DATABASE_URL=postgresql://hub:hubsecret@localhost:5433/downstream_hub`
-
-- If you run the app **without Docker** (your own Postgres): use the same URL you use for the running app.
+- Set **`DATABASE_URL`** in the environment (e.g. in `backend/.env` or in your shell).
+- Example: `DATABASE_URL=postgresql://user:password@localhost:5432/downstream_hub_test`
 
 If `DATABASE_URL` is not set or the DB is unreachable, the suite still runs; DB-dependent tests are skipped or tolerate 500 where applicable.
 

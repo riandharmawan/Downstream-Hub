@@ -49,6 +49,14 @@ export default function Admin() {
   const [userDeactivateConfirm, setUserDeactivateConfirm] = useState(null);
   const [resetPasswordResult, setResetPasswordResult] = useState(null);
   const [passwordExpiryDays, setPasswordExpiryDays] = useState(0);
+  const [minPasswordLength, setMinPasswordLength] = useState(6);
+  const [requireUppercase, setRequireUppercase] = useState(true);
+  const [requireLowercase, setRequireLowercase] = useState(true);
+  const [requireNumber, setRequireNumber] = useState(true);
+  const [requireSymbol, setRequireSymbol] = useState(true);
+  const [passwordHistoryCount, setPasswordHistoryCount] = useState(5);
+  const [maxLoginAttempts, setMaxLoginAttempts] = useState(5);
+  const [lockoutDurationMins, setLockoutDurationMins] = useState(30);
   const [policyLoading, setPolicyLoading] = useState(true);
   const [policySaving, setPolicySaving] = useState(false);
 
@@ -87,7 +95,17 @@ export default function Admin() {
   useEffect(() => {
     if (user?.role !== 'Admin') return;
     apiRequest('/api/settings/password-policy', {}, token)
-      .then((data) => setPasswordExpiryDays(data.password_expiry_days ?? 0))
+      .then((data) => {
+        setPasswordExpiryDays(data.password_expiry_days ?? 0);
+        setMinPasswordLength(data.min_password_length ?? 6);
+        setRequireUppercase(data.require_uppercase ?? true);
+        setRequireLowercase(data.require_lowercase ?? true);
+        setRequireNumber(data.require_number ?? true);
+        setRequireSymbol(data.require_symbol ?? true);
+        setPasswordHistoryCount(data.password_history_count ?? 5);
+        setMaxLoginAttempts(data.max_login_attempts ?? 5);
+        setLockoutDurationMins(data.lockout_duration_mins ?? 30);
+      })
       .catch(() => setPasswordExpiryDays(0))
       .finally(() => setPolicyLoading(false));
   }, [token, user?.role]);
@@ -97,12 +115,27 @@ export default function Admin() {
     setError('');
     setPolicySaving(true);
     try {
-      const days = Math.max(0, Math.min(365, parseInt(String(passwordExpiryDays), 10) || 0));
-      await apiRequest('/api/settings/password-policy', {
-        method: 'PUT',
-        body: JSON.stringify({ password_expiry_days: days }),
-      }, token);
-      setPasswordExpiryDays(days);
+      const payload = {
+        password_expiry_days: Math.max(0, Math.min(365, parseInt(String(passwordExpiryDays), 10) || 0)),
+        min_password_length: Math.max(6, Math.min(128, parseInt(String(minPasswordLength), 10) || 6)),
+        require_uppercase: !!requireUppercase,
+        require_lowercase: !!requireLowercase,
+        require_number: !!requireNumber,
+        require_symbol: !!requireSymbol,
+        password_history_count: Math.max(0, Math.min(24, parseInt(String(passwordHistoryCount), 10) || 5)),
+        max_login_attempts: Math.max(1, Math.min(10, parseInt(String(maxLoginAttempts), 10) || 5)),
+        lockout_duration_mins: Math.max(1, Math.min(1440, parseInt(String(lockoutDurationMins), 10) || 30)),
+      };
+      const data = await apiRequest('/api/settings/password-policy', { method: 'PUT', body: JSON.stringify(payload) }, token);
+      setPasswordExpiryDays(data.password_expiry_days ?? 0);
+      setMinPasswordLength(data.min_password_length ?? 6);
+      setRequireUppercase(data.require_uppercase ?? true);
+      setRequireLowercase(data.require_lowercase ?? true);
+      setRequireNumber(data.require_number ?? true);
+      setRequireSymbol(data.require_symbol ?? true);
+      setPasswordHistoryCount(data.password_history_count ?? 5);
+      setMaxLoginAttempts(data.max_login_attempts ?? 5);
+      setLockoutDurationMins(data.lockout_duration_mins ?? 30);
     } catch (err) {
       setError(err.error || 'Failed to save');
     } finally {
@@ -333,6 +366,16 @@ export default function Admin() {
     }
   }
 
+  async function handleUnlock(u) {
+    setError('');
+    try {
+      await apiRequest(`/api/users/${u.id}/unlock`, { method: 'POST' }, token);
+      await loadUsers();
+    } catch (err) {
+      setError(err.error || 'Unlock failed');
+    }
+  }
+
   function copyPasswordToClipboard() {
     if (!resetPasswordResult?.temporary_password) return;
     navigator.clipboard.writeText(resetPasswordResult.temporary_password);
@@ -543,7 +586,7 @@ export default function Admin() {
           <h2 style={styles.sectionTitle}>Users</h2>
           <p style={styles.sectionDesc}>Create users, assign Business Units, deactivate users, or reset passwords. Copy the new password after reset to pass it to the user.</p>
           <div style={styles.toolbar}>
-            <button type="button" className="btn-primary" onClick={openAddUser} style={styles.primaryBtn}>Add user</button>
+            <button type="button" className="btn-secondary" onClick={openAddUser}>Add user</button>
           </div>
           {showAddUserForm && (
             <form onSubmit={handleAddUser} style={styles.form}>
@@ -607,7 +650,8 @@ export default function Admin() {
                   <th style={styles.tableHeader}>Email</th>
                   <th style={styles.tableHeader}>Role</th>
                   <th style={styles.tableHeader}>Business Unit</th>
-                  <th style={{ ...styles.tableHeader, width: 280 }}>Actions</th>
+                  <th style={styles.tableHeader}>Status</th>
+                  <th style={{ ...styles.tableHeader, width: 320 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -616,9 +660,13 @@ export default function Admin() {
                     <td style={styles.tableCell}>{u.email}</td>
                     <td style={styles.tableCell}>{u.role}</td>
                     <td style={styles.tableCell}>{u.business_unit_name || '—'}</td>
+                    <td style={styles.tableCell}>{u.locked_until && new Date(u.locked_until) > new Date() ? 'Locked' : '—'}</td>
                     <td style={styles.actionsCell}>
                       <button type="button" className="btn-secondary" onClick={() => openUserBuEdit(u)}>Edit BU</button>
                       <button type="button" className="btn-secondary" onClick={() => handleResetPassword(u)}>Reset password</button>
+                      {u.locked_until && new Date(u.locked_until) > new Date() && (
+                        <button type="button" className="btn-primary" onClick={() => handleUnlock(u)}>Unlock</button>
+                      )}
                       <button type="button" className="btn-secondary" onClick={() => setUserDeactivateConfirm(u)}>Deactivate</button>
                     </td>
                   </tr>
@@ -689,7 +737,7 @@ export default function Admin() {
           <p style={styles.sectionDesc}>Add and manage internal apps. Set <strong>Target BU</strong> to limit visibility to one Business Unit, or leave as &quot;All BUs (Global)&quot; so everyone sees the app. URL validation and confirmation before delete.</p>
         </section>
         <div style={styles.toolbar}>
-          <button type="button" className="btn-primary" onClick={openCreate} style={styles.primaryBtn}>Add application</button>
+          <button type="button" className="btn-secondary" onClick={openCreate}>Add application</button>
         </div>
 
         {showForm && (
@@ -787,21 +835,76 @@ export default function Admin() {
           {activeSection === 'password-policy' && (
         <section style={styles.section}>
           <h2 style={styles.sectionTitle}>Password policy</h2>
-          <p style={styles.sectionDesc}>Require users to change their password after a number of days. Set to <strong>0</strong> to disable expiry.</p>
+          <p style={styles.sectionDesc}>Configure password expiry, complexity, history, and account lockout. Set expiry to <strong>0</strong> to disable.</p>
           {policyLoading ? (
             <p>Loading…</p>
           ) : (
             <form onSubmit={handleSavePasswordPolicy} style={styles.form}>
-              <label style={styles.label}>Password expires after (days)</label>
-              <input
-                type="number"
-                min={0}
-                max={365}
-                value={passwordExpiryDays}
-                onChange={(e) => setPasswordExpiryDays(parseInt(e.target.value, 10) || 0)}
-                style={{ ...styles.input, maxWidth: 120 }}
-              />
-              <p style={{ margin: '0 0 var(--space-3)', fontSize: 'var(--text-small)', color: 'var(--color-text-steel)' }}>0 = never expire. Max 365 days.</p>
+              <div style={styles.policyGroupFirst}>
+                <h3 style={styles.policyGroupTitle}>Password expiry</h3>
+                <div style={styles.policyRow}>
+                  <div style={styles.policyLabelCol}>
+                    <label style={styles.policyLabel}>Password expires after (days)</label>
+                  </div>
+                  <div style={styles.policyInputCol}>
+                    <input type="number" min={0} max={365} value={passwordExpiryDays} onChange={(e) => setPasswordExpiryDays(parseInt(e.target.value, 10) || 0)} style={styles.policyInput} />
+                  </div>
+                </div>
+              </div>
+              <div style={styles.policyGroup}>
+                <h3 style={styles.policyGroupTitle}>Password requirements</h3>
+                <div style={styles.policyRow}>
+                  <div style={styles.policyLabelCol}>
+                    <label style={styles.policyLabel}>Minimum password length</label>
+                  </div>
+                  <div style={styles.policyInputCol}>
+                    <input type="number" min={6} max={128} value={minPasswordLength} onChange={(e) => setMinPasswordLength(parseInt(e.target.value, 10) || 6)} style={styles.policyInput} />
+                  </div>
+                </div>
+                <div style={styles.policyRow}>
+                  <div style={styles.policyLabelCol}>
+                    <label style={styles.policyLabel}>Complexity (require at least one of each)</label>
+                  </div>
+                  <div style={styles.policyInputCol}>
+                    <div style={styles.checkboxRow}>
+                      <label style={styles.checkboxLabel}><input type="checkbox" checked={requireUppercase} onChange={(e) => setRequireUppercase(e.target.checked)} /> Uppercase</label>
+                      <label style={styles.checkboxLabel}><input type="checkbox" checked={requireLowercase} onChange={(e) => setRequireLowercase(e.target.checked)} /> Lowercase</label>
+                      <label style={styles.checkboxLabel}><input type="checkbox" checked={requireNumber} onChange={(e) => setRequireNumber(e.target.checked)} /> Number</label>
+                      <label style={styles.checkboxLabel}><input type="checkbox" checked={requireSymbol} onChange={(e) => setRequireSymbol(e.target.checked)} /> Symbol</label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div style={styles.policyGroup}>
+                <h3 style={styles.policyGroupTitle}>Password history</h3>
+                <div style={styles.policyRow}>
+                  <div style={styles.policyLabelCol}>
+                    <label style={styles.policyLabel}>Prevent reuse of last N passwords (0 = disabled)</label>
+                  </div>
+                  <div style={styles.policyInputCol}>
+                    <input type="number" min={0} max={24} value={passwordHistoryCount} onChange={(e) => setPasswordHistoryCount(parseInt(e.target.value, 10) || 0)} style={styles.policyInput} />
+                  </div>
+                </div>
+              </div>
+              <div style={styles.policyGroup}>
+                <h3 style={styles.policyGroupTitle}>Account lockout</h3>
+                <div style={styles.policyRow}>
+                  <div style={styles.policyLabelCol}>
+                    <label style={styles.policyLabel}>Max login attempts before lockout</label>
+                  </div>
+                  <div style={styles.policyInputCol}>
+                    <input type="number" min={1} max={10} value={maxLoginAttempts} onChange={(e) => setMaxLoginAttempts(parseInt(e.target.value, 10) || 5)} style={styles.policyInput} />
+                  </div>
+                </div>
+                <div style={styles.policyRow}>
+                  <div style={styles.policyLabelCol}>
+                    <label style={styles.policyLabel}>Lockout duration (minutes)</label>
+                  </div>
+                  <div style={styles.policyInputCol}>
+                    <input type="number" min={1} max={1440} value={lockoutDurationMins} onChange={(e) => setLockoutDurationMins(parseInt(e.target.value, 10) || 30)} style={styles.policyInput} />
+                  </div>
+                </div>
+              </div>
               <div style={styles.formActions}>
                 <button type="submit" className="btn-primary" disabled={policySaving}>{policySaving ? 'Saving…' : 'Save'}</button>
               </div>
@@ -847,4 +950,14 @@ const styles = {
   sectionTitle: { margin: '0 0 var(--space-1)', fontSize: 'var(--text-h3)', fontFamily: 'var(--font-heading)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
   sectionDesc: { margin: '0 0 var(--space-3)', fontSize: 'var(--text-small)', color: 'var(--color-text-steel)' },
   label: { display: 'block', marginBottom: 'var(--space-1)', fontSize: 'var(--text-small)', fontWeight: 'var(--font-weight-medium)', color: 'var(--color-text-charcoal)' },
+  policyGroupFirst: { marginTop: 0, paddingTop: 0 },
+  policyGroup: { marginTop: 'var(--space-4)', paddingTop: 'var(--space-4)', borderTop: '1px solid var(--color-border-light)' },
+  policyGroupTitle: { margin: '0 0 var(--space-2)', fontSize: 'var(--text-base)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
+  checkboxRow: { display: 'flex', flexWrap: 'wrap', gap: 'var(--space-3)' },
+  checkboxLabel: { fontSize: 'var(--text-small)', color: 'var(--color-text-charcoal)', cursor: 'pointer' },
+  policyRow: { display: 'flex', alignItems: 'flex-start', gap: 'var(--space-4)', marginBottom: 'var(--space-3)' },
+  policyLabelCol: { flex: '0 0 260px', minWidth: 0 },
+  policyInputCol: { flex: 1, minWidth: 0 },
+  policyLabel: { display: 'block', fontSize: 'var(--text-small)', fontWeight: 'var(--font-weight-medium)', color: 'var(--color-text-charcoal)', paddingTop: 'var(--space-2)' },
+  policyInput: { width: '100%', maxWidth: 120, padding: 'var(--space-2) var(--space-3)', border: '1px solid var(--color-border-medium)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-base)' },
 };

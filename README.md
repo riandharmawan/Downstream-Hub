@@ -47,6 +47,7 @@ Downstream Hub addresses this with a single portal and secure token hand-off to 
 - **SSO hand-off:** Secure token generation; token is **not** passed in the URL. The bridge page POSTs the token to the target app (form body); target apps can read the token from the request body or support **Authorization** header. Target apps must accept and validate the token (e.g. 60s TTL).
 - **Audit:** All Admin CRUD actions and SSO access (user, app, outcome) are logged. The audit table is append-only; SSO attempts are recorded in `sso_access_logs`.
 - **Password expiry:** Admins set "Password expires after X days" in Admin → Password policy. Expired users must change password before signing in; logged-in users can change password from the Dashboard.
+- **Security policy (configurable):** **Password complexity** (min length, uppercase/lowercase/number/symbol), **password history** (no reuse of last X passwords), **account lockout** (lock after X failed logins; unlock after configured duration or by Admin). Policy is set in Admin → Security policy; Admins can **Unlock** locked users in Admin → Users.
 - **Soft delete:** Core tables (users, applications, allowed_domains, business_units, sso_access_logs) use a `deleted_at` timestamp. Admin “Delete” soft-deletes rows; all API reads exclude soft-deleted data via a dedicated data access layer (see **technical-architecture.md** §3.7).
 
 
@@ -59,8 +60,9 @@ Downstream Hub addresses this with a single portal and secure token hand-off to 
 | **C** | Admin polish: Applications section title/description; sidebar sub-routes. | Done |
 | **D** | SSO and audit: Bridge page, token in body; audit and SSO access logs. | Done |
 | **Password expiry** | Admin → Password policy (expire after N days); login blocks expired users; change-password-expired page; in-app Change password. | Done |
+| **Security policy** | Complexity (min length, character types), password history (no reuse of last X), lockout (X failed attempts → lock; 30 min or Admin unlock); Admin Unlock in Users. | Done |
 
-For step-by-step verification of all phases, see **[TESTING.md](TESTING.md)**. For a comprehensive test plan (unit, integration, E2E) aligned with the PRD, see **[docs/TEST-PLAN.md](docs/TEST-PLAN.md)**.
+For step-by-step verification of all phases, see **[TESTING.md](TESTING.md)**. For a comprehensive test plan (unit, integration, E2E) aligned with the PRD, see **[Docs/TEST-PLAN.md](Docs/TEST-PLAN.md)**. For security and penetration test findings (fixed vs open), see **[Docs/PENTEST-REPORT.md](Docs/PENTEST-REPORT.md)**.
 
 ## What’s Out of Scope
 

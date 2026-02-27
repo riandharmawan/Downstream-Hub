@@ -9,6 +9,9 @@ const { pool } = require('../db/pool');
 const usersDb = require('../db/usersDb');
 const businessUnitsDb = require('../db/businessUnitsDb');
 const allowedDomainsDb = require('../db/allowedDomainsDb');
+const passwordPolicyDb = require('../db/passwordPolicyDb');
+const passwordHistoryDb = require('../db/passwordHistoryDb');
+const { validatePassword } = require('../lib/passwordValidation');
 const { authMiddleware, requireAdmin } = require('../middleware/auth');
 const { auditLog, getClientIp } = require('../middleware/audit');
 
@@ -35,6 +38,7 @@ router.get('/', authMiddleware, requireAdmin, async (req, res) => {
       business_unit_id: r.business_unit_id,
       business_unit_name: r.business_unit_name || null,
       created_at: r.created_at,
+      locked_until: r.locked_until || null,
     }));
     res.json({ users });
   } catch (err) {
@@ -57,8 +61,10 @@ router.post('/', authMiddleware, requireAdmin, async (req, res) => {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    const policy = await passwordPolicyDb.get(pool);
+    const pv = validatePassword(password, policy);
+    if (!pv.valid) {
+      return res.status(400).json({ error: pv.error });
     }
     const validRoles = ['Admin', 'Employee'];
     const roleVal = role != null && role !== '' ? String(role) : 'Employee';
@@ -96,6 +102,30 @@ router.post('/', authMiddleware, requireAdmin, async (req, res) => {
     if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
     console.error('Create user error:', err);
     res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+// POST /api/users/:id/unlock — clear lock state (Admin only); must be before PATCH /:id
+router.post('/:id/unlock', authMiddleware, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const user = await usersDb.getById(pool, id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    await usersDb.unlockUser(pool, id);
+    await auditLog(pool, {
+      actorId: req.user.id,
+      actionType: 'UNLOCK',
+      targetEntity: `user:${user.email}`,
+      payloadBefore: null,
+      payloadAfter: null,
+      ipAddress: getClientIp(req),
+    });
+    res.json({ message: 'Account unlocked' });
+  } catch (err) {
+    console.error('Unlock user error:', err);
+    res.status(500).json({ error: 'Failed to unlock user' });
   }
 });
 
@@ -137,6 +167,7 @@ router.post('/:id/reset-password', authMiddleware, requireAdmin, async (req, res
     const temporaryPassword = generateRandomPassword();
     const password_hash = await bcrypt.hash(temporaryPassword, 10);
     await usersDb.updatePassword(pool, id, password_hash);
+    await passwordHistoryDb.deleteForUser(pool, id);
     await auditLog(pool, {
       actorId: req.user.id,
       actionType: 'PASSWORD_RESET',

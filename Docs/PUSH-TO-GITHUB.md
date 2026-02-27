@@ -1,84 +1,73 @@
-# Push Downstream Hub to GitHub
+# Push Downstream Hub to GitHub (sit branch)
 
-Use these steps to push this project to: **https://github.com/riandharmawan/Downstream-Hub**
-
----
-
-## Prerequisites
-
-- **Git** installed on your machine ([git-scm.com](https://git-scm.com)).
-- **GitHub access:** You must be able to push to `riandharmawan/Downstream-Hub` (repo exists and you have write access). If the repo doesn’t exist yet, create it on GitHub first (empty repo, no README).
+**Repository:** https://github.com/riandharmawan/Downstream-Hub  
+**Target branch:** `sit` (not `main`)
 
 ---
 
-## Commands (run in project root)
+## One-time setup (if the folder is not yet a git repo)
 
-Open a terminal (PowerShell, CMD, or Git Bash) and go to the project folder:
-
-```bash
-cd "c:\Users\04125050828\Documents\Workspace\Cursor\Downstream Hub"
-```
-
-Then run:
+Run these in the project root (`Downstream Hub`):
 
 ```bash
-# 1. Initialize git (if not already)
+# 1. Initialize git (only if not already a repo)
 git init
 
-# 2. Add the GitHub remote
+# 2. Add the GitHub remote (use "origin" or another name)
 git remote add origin https://github.com/riandharmawan/Downstream-Hub.git
 
-# 3. Stage all files (.env is ignored by .gitignore)
+# 3. Create and switch to the "sit" branch
+git checkout -b sit
+```
+
+---
+
+## Push to the sit branch
+
+```bash
+# 1. Stage all files (respects .gitignore; .env is ignored)
 git add .
 
-# 4. First commit
-git commit -m "Initial commit: Downstream Hub"
+# 2. Commit
+git commit -m "Initial push to sit: Downstream Hub with rate limiting, security policy, pentest report"
 
-# 5. Push to GitHub (main branch)
-git branch -M main
-git push -u origin main
+# 3. Push to the "sit" branch on GitHub (creates "sit" on remote if needed)
+git push -u origin sit
 ```
 
-If the repo already has a default branch named `main`, step 5 is enough. If GitHub created the repo with `master`, use:
+If the remote already has a `sit` branch and you want to overwrite it with your local state:
 
 ```bash
-git push -u origin main
+git push -u origin sit --force
 ```
 
-(or use `master` instead of `main` if you prefer).
+Use `--force` only when you intend to replace the remote `sit` branch.
 
 ---
 
-## If the repo already has content (e.g. README)
-
-If you created the repo on GitHub with a README or license and you want to replace it with this code:
+## If the repo is already initialized and has a different branch
 
 ```bash
-git pull origin main --allow-unrelated-histories
-# Resolve any merge conflicts if prompted, then:
-git push -u origin main
-```
+# See current branch
+git branch
 
-Or, to overwrite the remote with your local version (use only if you’re sure):
+# If you're on main (or another branch), create/switch to sit
+git checkout -b sit
 
-```bash
-git push -u origin main --force
+# Add and commit any uncommitted changes
+git add .
+git status
+git commit -m "Your commit message"
+
+# Set upstream and push to sit
+git push -u origin sit
 ```
 
 ---
 
-## Authentication
+## Notes
 
-- **HTTPS:** When you `git push`, Git will ask for your GitHub username and **password**. Use a **Personal Access Token (PAT)** as the password, not your account password. Create one: GitHub → Settings → Developer settings → Personal access tokens.
-- **SSH:** If you use SSH keys, change the remote to:  
+- **.env** is in `.gitignore` and will not be pushed (use `.env.example` as a template on the repo).
+- To use SSH instead of HTTPS, set:  
   `git remote set-url origin git@github.com:riandharmawan/Downstream-Hub.git`  
-  then run `git push -u origin main` as above.
-
----
-
-## Check before pushing
-
-- `.env` is in `.gitignore` (it is), so it will **not** be committed. Only `.env.example` is tracked.
-- Do not remove `.env` from `.gitignore`; keep secrets out of the repo.
-
-After a successful push, your code will be at: **https://github.com/riandharmawan/Downstream-Hub**
+  then run `git push -u origin sit` as above.

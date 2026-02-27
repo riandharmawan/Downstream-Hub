@@ -5,6 +5,7 @@
 async function listWithBu(db) {
   const { rows } = await db.query(
     `SELECT u.id, u.email, u.role, u.business_unit_id, u.created_at,
+            u.failed_login_attempts, u.locked_until,
             bu.name AS business_unit_name
      FROM users u
      LEFT JOIN business_units bu ON bu.id = u.business_unit_id AND bu.deleted_at IS NULL
@@ -19,7 +20,7 @@ async function listWithBu(db) {
 
 async function getById(db, id) {
   const { rows } = await db.query(
-    'SELECT id, email, role, business_unit_id FROM users WHERE id = $1 AND deleted_at IS NULL',
+    'SELECT id, email, role, business_unit_id, failed_login_attempts, locked_until FROM users WHERE id = $1 AND deleted_at IS NULL',
     [id]
   );
   return rows[0] || null;
@@ -40,7 +41,7 @@ async function getByIdWithBuName(db, id) {
 
 async function getByEmail(db, email) {
   const { rows } = await db.query(
-    'SELECT id, email, password_hash, role, business_unit_id, password_changed_at FROM users WHERE email = $1 AND deleted_at IS NULL',
+    'SELECT id, email, password_hash, role, business_unit_id, password_changed_at, failed_login_attempts, locked_until FROM users WHERE email = $1 AND deleted_at IS NULL',
     [email]
   );
   return rows[0] || null;
@@ -90,6 +91,36 @@ async function softDelete(db, id) {
   return rowCount > 0;
 }
 
+/** Increment failed login count; set locked_until when attempts >= maxAttempts. */
+async function incrementFailedLogin(db, userId, maxAttempts, lockoutMins) {
+  const max = Math.max(1, parseInt(maxAttempts, 10) || 5);
+  const mins = Math.max(1, Math.min(1440, parseInt(lockoutMins, 10) || 30));
+  await db.query(
+    `UPDATE users SET
+       failed_login_attempts = COALESCE(failed_login_attempts, 0) + 1,
+       locked_until = CASE WHEN (COALESCE(failed_login_attempts, 0) + 1) >= $2
+         THEN now() + ($3 * interval '1 minute') ELSE locked_until END
+     WHERE id = $1 AND deleted_at IS NULL`,
+    [userId, max, mins]
+  );
+}
+
+/** Clear lock state after successful login. */
+async function resetFailedLogin(db, userId) {
+  await db.query(
+    'UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1 AND deleted_at IS NULL',
+    [userId]
+  );
+}
+
+/** Admin unlock: clear lock state. */
+async function unlockUser(db, userId) {
+  await db.query(
+    'UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1 AND deleted_at IS NULL',
+    [userId]
+  );
+}
+
 module.exports = {
   listWithBu,
   getById,
@@ -100,4 +131,7 @@ module.exports = {
   updatePassword,
   updateBusinessUnit,
   softDelete,
+  incrementFailedLogin,
+  resetFailedLogin,
+  unlockUser,
 };
