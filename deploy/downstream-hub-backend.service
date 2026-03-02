@@ -1,0 +1,23 @@
+# systemd unit — Downstream Hub API (172.28.92.57)
+# Install: sudo cp downstream-hub-backend.service /etc/systemd/system/
+#         sudo systemctl daemon-reload
+#         sudo systemctl enable downstream-hub-backend
+#         sudo systemctl start downstream-hub-backend
+
+[Unit]
+Description=Downstream Hub API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=downstream
+Group=downstream
+WorkingDirectory=/opt/downstream-hub/backend
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/downstream-hub/backend/.env
+ExecStart=/usr/bin/node src/server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
