@@ -24,12 +24,12 @@ services:
 
   backend:
     build:
-      context: .
+      context: ..
       dockerfile: Backend/Dockerfile
     container_name: downstream-hub-api
     restart: unless-stopped
     env_file:
-      - Backend/.env
+      - ../Backend/.env
     environment:
       NODE_ENV: production
       PORT: 4000

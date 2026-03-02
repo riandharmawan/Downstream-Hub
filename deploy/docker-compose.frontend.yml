@@ -5,7 +5,7 @@
 services:
   frontend:
     build:
-      context: .
+      context: ..
       dockerfile: Frontend/Dockerfile
       args:
         VITE_API_URL: http://172.28.92.57:4000
