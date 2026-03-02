@@ -24,8 +24,8 @@ services:
 
   backend:
     build:
-      context: ..
-      dockerfile: Backend/Dockerfile
+      context: ../Backend
+      dockerfile: Dockerfile
     container_name: downstream-hub-api
     restart: unless-stopped
     env_file:

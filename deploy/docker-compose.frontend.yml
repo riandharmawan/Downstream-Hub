@@ -5,8 +5,8 @@
 services:
   frontend:
     build:
-      context: ..
-      dockerfile: Frontend/Dockerfile
+      context: ../Frontend
+      dockerfile: Dockerfile
       args:
         VITE_API_URL: http://172.28.92.57:4000
     container_name: downstream-hub-web
