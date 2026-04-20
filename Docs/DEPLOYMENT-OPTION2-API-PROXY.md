@@ -78,15 +78,23 @@ sudo iptables -I INPUT -p tcp --dport 3011 -j ACCEPT
 
 ## Step 4 — Rebuild frontend with same-origin API URL
 
-The frontend must call the API at **http://172.28.92.56:3011** (same origin) so the browser sends requests to Nginx, which then proxies to the backend.
+**Why this step:** The frontend is built once; the API base URL is **baked into** the JavaScript at build time (`VITE_API_URL`). Right now it was built with `http://172.28.92.57:4000`, so the browser tries to call the backend directly and gets blocked. We need a **new build** where the API URL is `http://172.28.92.56:3011` so that:
 
-On **172.28.92.56**:
+1. The browser sends all requests (page + API) to **172.28.92.56:3011**.
+2. Nginx on 172.28.92.56 receives them; for `/api/...` it forwards to 172.28.92.57:4000.
+
+**What to run** on **172.28.92.56**:
 
 ```bash
 cd /opt/downstream-hub
+# Build a new frontend image with API URL = same server (3011)
 docker compose -f deploy/docker-compose.frontend.yml build --no-cache --build-arg VITE_API_URL=http://172.28.92.56:3011
+# Start the container with the new image (replaces the old one)
 docker compose -f deploy/docker-compose.frontend.yml up -d
 ```
+
+- `build --no-cache --build-arg VITE_API_URL=...` = create a new frontend image where the app calls 172.28.92.56:3011 for the API.
+- `up -d` = run the container from that new image so the change takes effect.
 
 ---
 

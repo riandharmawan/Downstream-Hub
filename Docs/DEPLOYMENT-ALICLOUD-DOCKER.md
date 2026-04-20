@@ -57,12 +57,25 @@ Clone the full repo on **both** servers (or at least the parts needed to build t
 
 ### 4.1 Clone repository
 
+**If `/opt/downstream-hub` is empty** (first time):
+
 ```bash
 sudo mkdir -p /opt/downstream-hub
 sudo chown "$USER:$USER" /opt/downstream-hub
 cd /opt/downstream-hub
 git clone --branch sit https://github.com/riandharmawan/Downstream-Hub.git .
 ```
+
+**If `/opt/downstream-hub` already exists** (e.g. you get "destination path '.' already exists and is not an empty directory"):
+
+```bash
+cd /opt/downstream-hub
+git fetch origin
+git checkout sit
+git pull origin sit
+```
+
+Then confirm the deploy folder exists: `ls deploy/` (you should see `docker-compose.frontend.yml`).
 
 ### 4.2 Build and run (port 3010)
 
@@ -128,21 +141,28 @@ git clone --branch sit https://github.com/riandharmawan/Downstream-Hub.git .
 
 ### 5.2 Backend environment file
 
-The backend container needs `JWT_SECRET`, `SSO_TOKEN_SECRET`, `API_PUBLIC_URL`, etc. The compose file sets `DATABASE_URL` to the Postgres container; other vars come from `Backend/.env`.
+Create the file that the **backend container** will read (secrets and API URL). The **database** URL is set by the compose file, so you do not put it in this file.
+
+**1. Copy the example and open it:**
 
 ```bash
+cd /opt/downstream-hub
 cp deploy/env.backend.example Backend/.env
 nano Backend/.env
 ```
 
-Set at least (values in `Backend/.env` are used by the backend container):
+**2. Edit these four values** (replace the placeholders with your own):
 
-- **JWT_SECRET** — long random string (production)
-- **SSO_TOKEN_SECRET** — long random string (production)
-- **API_PUBLIC_URL** — `http://172.28.92.57:4000` (or your public API URL)
-- **TRUST_PROXY=1** (recommended)
+| Variable | What to put | Example |
+|---------|-------------|---------|
+| **JWT_SECRET** | A long random string (used to sign login tokens). Generate one, e.g. `openssl rand -base64 32` | `a1b2c3d4e5...` (many characters) |
+| **SSO_TOKEN_SECRET** | Another long random string (used for SSO token encryption). | Same idea as above |
+| **API_PUBLIC_URL** | The URL where the API is reachable (for SSO redirects). | `http://172.28.92.57:4000` |
+| **TRUST_PROXY** | Leave as `1` when behind a proxy or load balancer. | `1` |
 
-Do **not** set `DATABASE_URL` in `Backend/.env` for this stack; the compose file overrides it to `postgresql://hub:...@postgres:5432/downstream_hub`.
+**3. Remove or comment out `DATABASE_URL`** in `Backend/.env` for this Docker setup. The compose file injects `DATABASE_URL` automatically so the backend connects to the Postgres container. If `DATABASE_URL` is present in `Backend/.env`, the compose file’s value still overrides it; removing it avoids confusion.
+
+Save and exit (`Ctrl+O`, Enter, `Ctrl+X` in nano).
 
 ### 5.3 PostgreSQL env (for compose)
 
@@ -175,6 +195,26 @@ sudo firewall-cmd --permanent --add-port=4000/tcp
 # sudo firewall-cmd --permanent --add-port=5432/tcp
 sudo firewall-cmd --reload
 ```
+
+### 5.5a Verify database (optional)
+
+To confirm the Postgres container and app database are set up correctly, on **172.28.92.57** run:
+
+```bash
+# 1. Postgres container is running
+docker ps | grep downstream-hub-db
+
+# 2. Connect into the Postgres container and check DB + tables
+docker exec -it downstream-hub-db psql -U hub -d downstream_hub -c "\dt"
+```
+
+You should see tables such as `users`, `allowed_domains`, `business_units`, `applications`, `audit_logs`, `password_policy`, etc. If migrations ran on backend startup, these exist. To check allowed domains:
+
+```bash
+docker exec -it downstream-hub-db psql -U hub -d downstream_hub -c "SELECT domain FROM allowed_domains WHERE deleted_at IS NULL;"
+```
+
+You should see at least `example.com` (seeded by migration).
 
 ### 5.6 Useful commands
 

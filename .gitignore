@@ -30,6 +30,9 @@ Thumbs.db
 # Docker
 *.log
 
+# Uploaded app icons (created at runtime)
+Backend/uploads/
+
 # Temp
 *.tmp
 .cache/

@@ -14,6 +14,7 @@ export function AuthProvider({ children }) {
       setLoading(false);
       return;
     }
+    setLoading(true);
     apiRequest('/api/auth/me', {}, token)
       .then((data) => setUser(data.user))
       .catch(() => {
@@ -29,6 +30,7 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
+    setLoading(true);
     localStorage.setItem('token', data.token);
     setToken(data.token);
     setUser(data.user);
@@ -47,6 +49,7 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: JSON.stringify({ email, password, password_retype, business_unit_id: business_unit_id || undefined }),
     });
+    setLoading(true);
     localStorage.setItem('token', data.token);
     setToken(data.token);
     setUser(data.user);

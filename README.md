@@ -62,7 +62,7 @@ Downstream Hub addresses this with a single portal and secure token hand-off to 
 | **Password expiry** | Admin → Password policy (expire after N days); login blocks expired users; change-password-expired page; in-app Change password. | Done |
 | **Security policy** | Complexity (min length, character types), password history (no reuse of last X), lockout (X failed attempts → lock; 30 min or Admin unlock); Admin Unlock in Users. | Done |
 
-For step-by-step verification of all phases, see **[TESTING.md](TESTING.md)**. For a comprehensive test plan (unit, integration, E2E) aligned with the PRD, see **[Docs/TEST-PLAN.md](Docs/TEST-PLAN.md)**. For security and penetration test findings (fixed vs open), see **[Docs/PENTEST-REPORT.md](Docs/PENTEST-REPORT.md)**.
+For step-by-step verification of all phases, see **[TESTING.md](TESTING.md)**. For a comprehensive test plan (unit, integration, E2E) aligned with the PRD, see **[Docs/TEST-PLAN.md](Docs/TEST-PLAN.md)**. For security and penetration test findings (fixed vs open), see **[Docs/PENTEST-REPORT.md](Docs/PENTEST-REPORT.md)**. For deployment to Alibaba Cloud (two servers: Frontend + Backend/DB), see **[Docs/DEPLOYMENT-ALICLOUD.md](Docs/DEPLOYMENT-ALICLOUD.md)**; for **Docker** on the same two servers, see **[Docs/DEPLOYMENT-ALICLOUD-DOCKER.md](Docs/DEPLOYMENT-ALICLOUD-DOCKER.md)**.
 
 ## What’s Out of Scope
 

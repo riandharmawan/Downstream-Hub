@@ -1,6 +1,6 @@
 # Downstream Hub — Docker Compose (Dev / environment parity)
 # Run: docker compose up --build
-# Frontend: http://localhost:3000  |  Backend API: http://localhost:4000
+# Frontend (host port): FRONTEND_PORT from .env — default 3100 to avoid clashing with Jetty/other apps on 3000. Backend API: http://localhost:4000
 
 services:
   postgres:
@@ -37,12 +37,15 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: ./Backend
       dockerfile: Dockerfile
     container_name: downstream-hub-api
     restart: unless-stopped
+    # Root .env is loaded first; Backend/.env overrides (SMTP, PUBLIC_APP_URL, etc.).
+    # Docker did not use Backend/.env before — only repo-root .env — so edit root .env or Backend/.env and recreate the container.
     env_file:
       - .env
+      - Backend/.env
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       PORT: 4000
@@ -50,6 +53,9 @@ services:
       REDIS_URL: redis://redis:6379
     ports:
       - "${API_PORT:-4000}:4000"
+    volumes:
+      # Persist uploaded app icons across container rebuilds
+      - ./Backend/uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,14 +64,14 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ./Frontend
       dockerfile: Dockerfile
     container_name: downstream-hub-web
     restart: unless-stopped
     environment:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_PORT:-3100}:3000"
     depends_on:
       - backend
 

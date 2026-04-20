@@ -20,7 +20,7 @@ async function listWithBu(db) {
 
 async function getById(db, id) {
   const { rows } = await db.query(
-    'SELECT id, email, role, business_unit_id, failed_login_attempts, locked_until FROM users WHERE id = $1 AND deleted_at IS NULL',
+    'SELECT id, email, role, business_unit_id, failed_login_attempts, locked_until, token_version FROM users WHERE id = $1 AND deleted_at IS NULL',
     [id]
   );
   return rows[0] || null;
@@ -41,7 +41,7 @@ async function getByIdWithBuName(db, id) {
 
 async function getByEmail(db, email) {
   const { rows } = await db.query(
-    'SELECT id, email, password_hash, role, business_unit_id, password_changed_at, failed_login_attempts, locked_until FROM users WHERE email = $1 AND deleted_at IS NULL',
+    'SELECT id, email, password_hash, role, business_unit_id, password_changed_at, failed_login_attempts, locked_until, token_version FROM users WHERE email = $1 AND deleted_at IS NULL',
     [email]
   );
   return rows[0] || null;
@@ -58,7 +58,7 @@ async function create(db, { email, password_hash, role, business_unit_id }) {
   const buId = business_unit_id || null;
   const { rows } = await db.query(
     `INSERT INTO users (email, password_hash, role, business_unit_id, password_changed_at) VALUES ($1, $2, $3, $4, now())
-     RETURNING id, email, role, business_unit_id, created_at`,
+     RETURNING id, email, role, business_unit_id, created_at, token_version`,
     [email, password_hash, role, buId]
   );
   return rows[0];
@@ -66,9 +66,18 @@ async function create(db, { email, password_hash, role, business_unit_id }) {
 
 async function updatePassword(db, id, password_hash) {
   await db.query(
-    'UPDATE users SET password_hash = $1, password_changed_at = now() WHERE id = $2 AND deleted_at IS NULL',
+    'UPDATE users SET password_hash = $1, password_changed_at = now(), token_version = COALESCE(token_version, 0) + 1 WHERE id = $2 AND deleted_at IS NULL',
     [password_hash, id]
   );
+}
+
+/** Token version after password change (for JWT signing). */
+async function getTokenVersion(db, id) {
+  const { rows } = await db.query(
+    'SELECT token_version FROM users WHERE id = $1 AND deleted_at IS NULL',
+    [id]
+  );
+  return rows[0] ? Number(rows[0].token_version) : null;
 }
 
 async function updateBusinessUnit(db, id, business_unit_id) {
@@ -134,4 +143,5 @@ module.exports = {
   incrementFailedLogin,
   resetFailedLogin,
   unlockUser,
+  getTokenVersion,
 };

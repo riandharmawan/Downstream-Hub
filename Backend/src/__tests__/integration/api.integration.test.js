@@ -6,10 +6,12 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../../../.env') });
 
+const crypto = require('crypto');
 const request = require('supertest');
 const app = require('../../app');
 const { pool } = require('../../db/pool');
 const { runMigrations } = require('../../db/migrate');
+const passwordResetDb = require('../../db/passwordResetDb');
 
 const hasDb = !!process.env.DATABASE_URL;
 
@@ -178,6 +180,80 @@ describe('API Integration (TEST-PLAN)', () => {
     test('GET /api/users without token returns 401', async () => {
       const res = await request(app).get('/api/users');
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe('Password reset', () => {
+    const runDb = hasDb ? test : test.skip;
+
+    runDb('POST /api/auth/forgot-password — unknown email returns generic 200', async () => {
+      const res = await request(app)
+        .post('/api/auth/forgot-password')
+        .send({ email: `nonexistent-${Date.now()}@example.com` });
+      expect(res.status).toBe(200);
+      expect(res.body.message).toMatch(/If an account is associated/i);
+    });
+
+    runDb('POST /api/auth/reset-password — success invalidates prior JWT (tv bump)', async () => {
+      const email = `pwd-reset-${Date.now()}@example.com`;
+      const oldPass = 'OldResetPass1!';
+      const newPass = 'NewResetPass1!';
+      let res = await request(app).post('/api/auth/register').send({
+        email,
+        password: oldPass,
+        password_retype: oldPass,
+      });
+      expect(res.status).toBe(201);
+      const userId = res.body.user.id;
+      const oldToken = res.body.token;
+
+      res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${oldToken}`);
+      expect(res.status).toBe(200);
+
+      const rawToken = `it-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
+      const tokenHash = crypto.createHash('sha256').update(rawToken, 'utf8').digest('hex');
+      await passwordResetDb.insert(pool, {
+        userId,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 3600000),
+        requestIp: '127.0.0.1',
+      });
+
+      res = await request(app).get(`/api/auth/reset-token-info?token=${encodeURIComponent(rawToken)}`);
+      expect(res.status).toBe(200);
+      expect(res.body.valid).toBe(true);
+
+      res = await request(app).post('/api/auth/reset-password').send({
+        token: rawToken,
+        new_password: newPass,
+        new_password_retype: newPass,
+      });
+      expect(res.status).toBe(200);
+
+      res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${oldToken}`);
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe('TOKEN_STALE');
+
+      res = await request(app).post('/api/auth/login').send({ email, password: oldPass });
+      expect(res.status).toBe(401);
+
+      res = await request(app).post('/api/auth/login').send({ email, password: newPass });
+      expect(res.status).toBe(200);
+      expect(res.body.token).toBeDefined();
+
+      const newTok = res.body.token;
+      res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${newTok}`);
+      expect(res.status).toBe(200);
+    });
+
+    runDb('POST /api/auth/reset-password — invalid token returns 400', async () => {
+      const res = await request(app).post('/api/auth/reset-password').send({
+        token: 'nope-not-a-real-token',
+        new_password: 'SomePass1!',
+        new_password_retype: 'SomePass1!',
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invalid|expired/i);
     });
   });
 

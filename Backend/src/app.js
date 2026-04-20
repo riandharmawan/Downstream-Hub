@@ -1,6 +1,7 @@
 /**
  * Express app (no listen). Used by server.js and by tests.
  */
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const authRoutes = require('./routes/auth');
@@ -17,6 +18,12 @@ if (process.env.TRUST_PROXY === '1') {
 }
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+app.use(
+  '/uploads',
+  express.static(path.join(__dirname, '..', 'uploads'), {
+    maxAge: process.env.NODE_ENV === 'production' ? '7d' : 0,
+  })
+);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'downstream-hub-api' });

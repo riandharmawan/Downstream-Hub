@@ -1,0 +1,9 @@
+{
+  "name": "downstream-hub",
+  "private": true,
+  "description": "Run API + SPA locally: two terminals — npm run dev:backend && npm run dev:frontend",
+  "scripts": {
+    "dev:backend": "npm run dev --prefix Backend",
+    "dev:frontend": "npm run dev --prefix Frontend"
+  }
+}

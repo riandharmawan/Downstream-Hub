@@ -2,7 +2,11 @@
  * Applications CRUD. List for all authenticated; create/update/delete for Admin only.
  * Delete is soft (deleted_at). Data access via applicationsDb (excludes soft-deleted).
  */
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
+const multer = require('multer');
 const { pool } = require('../db/pool');
 const applicationsDb = require('../db/applicationsDb');
 const businessUnitsDb = require('../db/businessUnitsDb');
@@ -13,21 +17,102 @@ const { auditLog, getClientIp } = require('../middleware/audit');
 const router = express.Router();
 
 const URL_REGEX = /^https?:\/\/[^\s]+$/i;
+const UPLOAD_ICON_PATH_REGEX = /^\/uploads\/app-icons\/[a-zA-Z0-9_.-]+\.(png|jpg|jpeg|webp|svg)$/i;
+
+const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads', 'app-icons');
+const MAX_ICON_BYTES = 100 * 1024;
+
+const MIME_TO_EXT = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/webp': '.webp',
+  'image/svg+xml': '.svg',
+};
+
+function ensureUploadDir() {
+  if (!fs.existsSync(UPLOAD_DIR)) {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  }
+}
+
+const iconUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      ensureUploadDir();
+      cb(null, UPLOAD_DIR);
+    },
+    filename: (_req, file, cb) => {
+      const ext = MIME_TO_EXT[file.mimetype];
+      if (!ext) {
+        cb(new Error('Only PNG, JPEG, WebP, and SVG files are allowed'));
+        return;
+      }
+      cb(null, `${crypto.randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: MAX_ICON_BYTES },
+  fileFilter: (_req, file, cb) => {
+    if (MIME_TO_EXT[file.mimetype]) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PNG, JPEG, WebP, and SVG files are allowed'));
+    }
+  },
+});
+
+function isValidIconUrl(s) {
+  if (!s || !String(s).trim()) return true;
+  const t = String(s).trim();
+  if (URL_REGEX.test(t)) return true;
+  if (UPLOAD_ICON_PATH_REGEX.test(t)) return true;
+  return false;
+}
 
 function validateAppBody(body) {
   const { name, description, icon_url, target_url, target_bu_id } = body || {};
   if (!name || typeof name !== 'string' || !name.trim()) return { error: 'Name is required' };
   if (!target_url || typeof target_url !== 'string' || !target_url.trim()) return { error: 'Target URL is required' };
   if (!URL_REGEX.test(target_url.trim())) return { error: 'Target URL must be a valid http(s) URL' };
+  const iconTrim = icon_url != null ? String(icon_url).trim() : '';
+  if (!isValidIconUrl(iconTrim)) {
+    return { error: 'Icon must be empty, a valid http(s) URL, or a hub upload path under /uploads/app-icons/' };
+  }
   const buId = target_bu_id === null || target_bu_id === undefined || target_bu_id === '' ? null : target_bu_id;
   return {
     name: name.trim(),
     description: description != null ? String(description).trim() : '',
-    icon_url: icon_url != null ? String(icon_url).trim() : '',
+    icon_url: iconTrim,
     target_url: target_url.trim(),
     target_bu_id: buId,
   };
 }
+
+function publicBaseUrl(req) {
+  const fromEnv = process.env.API_PUBLIC_URL || process.env.PUBLIC_APP_URL;
+  if (fromEnv && String(fromEnv).trim()) {
+    return String(fromEnv).replace(/\/$/, '');
+  }
+  return `${req.protocol}://${req.get('host')}`;
+}
+
+// POST /api/applications/icon-upload — Admin; multipart file field "file"
+router.post('/icon-upload', authMiddleware, requireAdmin, (req, res, next) => {
+  iconUpload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File too large (max 100 KB)' });
+    }
+    return res.status(400).json({ error: err.message || 'Upload failed' });
+  });
+}, (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded (use field name "file")' });
+  }
+  const base = publicBaseUrl(req);
+  const icon_url = `${base}/uploads/app-icons/${req.file.filename}`;
+  res.status(201).json({ icon_url });
+});
 
 // GET /api/applications/for-me — list apps for current user's BU or Global (authenticated)
 router.get('/for-me', authMiddleware, async (req, res) => {

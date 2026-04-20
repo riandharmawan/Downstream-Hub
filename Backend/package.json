@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "migrate": "node scripts/run-migrate.js",
     "test": "node node_modules/jest/bin/jest.js --runInBand --forceExit"
   },
   "engines": {
@@ -23,6 +24,8 @@
     "express-rate-limit": "^8.2.1",
     "jose": "^5.2.0",
     "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.0",
+    "nodemailer": "^8.0.5",
     "pg": "^8.11.3",
     "redis": "^4.6.12"
   }

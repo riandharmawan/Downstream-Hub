@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { apiRequest } from '../api';
+import { apiRequest, apiUpload } from '../api';
+import { applicationInitials } from '../utils/applicationInitials';
+import { resolveIconSrc } from '../utils/resolveIconSrc';
 
 const SECTIONS = [
   { id: 'domains', label: 'Domains', path: 'domains' },
@@ -24,6 +26,7 @@ export default function Admin() {
   const [form, setForm] = useState({ name: '', description: '', icon_url: '', target_url: '', target_bu_id: '' });
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [iconUploading, setIconUploading] = useState(false);
   const [domainsLoading, setDomainsLoading] = useState(true);
   const [domains, setDomains] = useState([]);
   const [domainForm, setDomainForm] = useState({ domain: '' });
@@ -379,6 +382,33 @@ export default function Admin() {
   function copyPasswordToClipboard() {
     if (!resetPasswordResult?.temporary_password) return;
     navigator.clipboard.writeText(resetPasswordResult.temporary_password);
+  }
+
+  async function handleIconFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setError('');
+    const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/svg+xml'];
+    if (!allowed.includes(file.type)) {
+      setError('Please choose a PNG, JPEG, WebP, or SVG file.');
+      return;
+    }
+    if (file.size > 100 * 1024) {
+      setError('Image must be 100 KB or smaller.');
+      return;
+    }
+    setIconUploading(true);
+    try {
+      const data = await apiUpload('/api/applications/icon-upload', file, token);
+      if (data?.icon_url) {
+        setForm((f) => ({ ...f, icon_url: data.icon_url }));
+      }
+    } catch (err) {
+      setError(err.error || 'Icon upload failed');
+    } finally {
+      setIconUploading(false);
+    }
   }
 
   async function handleSave(e) {
@@ -743,31 +773,69 @@ export default function Admin() {
         {showForm && (
           <form key={editing ? editing.id : 'new'} onSubmit={handleSave} style={styles.form}>
             <h3 style={styles.formTitle}>{editing ? 'Edit application' : 'New application'}</h3>
+            <label style={styles.label} htmlFor="app-name">App name</label>
             <input
-              placeholder="Name"
+              id="app-name"
+              placeholder="e.g. Jetty Planning System"
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               required
+              autoComplete="off"
               style={styles.input}
             />
+            <label style={styles.label} htmlFor="app-target-url">
+              Target URL <span style={{ color: 'var(--color-destructive)' }} aria-hidden="true">*</span>
+            </label>
             <input
-              placeholder="Description (optional)"
-              value={form.description}
-              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-              style={styles.input}
-            />
-            <input
-              placeholder="Icon URL (optional)"
-              value={form.icon_url}
-              onChange={(e) => setForm((f) => ({ ...f, icon_url: e.target.value }))}
-              style={styles.input}
-            />
-            <input
-              placeholder="Target URL (e.g. https://app.example.com)"
+              id="app-target-url"
+              placeholder="https://app.example.com"
               value={form.target_url}
               onChange={(e) => setForm((f) => ({ ...f, target_url: e.target.value }))}
               required
               type="url"
+              inputMode="url"
+              autoComplete="off"
+              aria-required="true"
+              style={styles.input}
+            />
+            <label style={styles.label} htmlFor="app-description">Description</label>
+            <input
+              id="app-description"
+              placeholder="Optional short description"
+              value={form.description}
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+              style={styles.input}
+            />
+            <label style={styles.label}>Application icon</label>
+            <input
+              type="file"
+              accept=".svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp"
+              onChange={handleIconFile}
+              disabled={iconUploading || saving}
+              style={styles.fileInput}
+            />
+            <p style={styles.helpText}>PNG, JPEG, WebP, or SVG — max 100 KB. You can also paste an image URL below.</p>
+            {iconUploading && <p style={styles.helpText}>Uploading…</p>}
+            {form.icon_url ? (
+              <div style={styles.iconPreviewRow}>
+                {resolveIconSrc(form.icon_url) ? (
+                  <img src={resolveIconSrc(form.icon_url)} alt="" style={styles.iconPreviewImg} />
+                ) : (
+                  <span style={styles.helpText}>Invalid URL — clear or fix below.</span>
+                )}
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setForm((f) => ({ ...f, icon_url: '' }))}
+                >
+                  Remove icon
+                </button>
+              </div>
+            ) : null}
+            <input
+              placeholder="Icon URL (optional, if not uploading a file)"
+              value={form.icon_url}
+              onChange={(e) => setForm((f) => ({ ...f, icon_url: e.target.value }))}
               style={styles.input}
             />
             <label style={styles.label}>Target Business Unit</label>
@@ -794,6 +862,7 @@ export default function Admin() {
           <table style={styles.table}>
             <thead>
               <tr>
+                <th style={{ ...styles.tableHeader, width: 56 }}>Icon</th>
                 <th style={styles.tableHeader}>Name</th>
                 <th style={styles.tableHeader}>Target URL</th>
                 <th style={styles.tableHeader}>Target BU</th>
@@ -801,8 +870,17 @@ export default function Admin() {
               </tr>
             </thead>
             <tbody>
-              {applications.map((app) => (
+              {applications.map((app) => {
+                const iconSrc = resolveIconSrc(app.icon_url);
+                return (
                 <tr key={app.id}>
+                  <td style={styles.tableCellIcon}>
+                    {iconSrc ? (
+                      <img src={iconSrc} alt="" style={styles.tableIconImg} />
+                    ) : (
+                      <span style={styles.tableIconInitials}>{applicationInitials(app.name)}</span>
+                    )}
+                  </td>
                   <td style={styles.tableCell}>{app.name}</td>
                   <td style={{ ...styles.tableCell, ...styles.urlCell }}>{app.target_url}</td>
                   <td style={styles.tableCell}>{app.target_bu_name || 'Global'}</td>
@@ -811,7 +889,8 @@ export default function Admin() {
                     <button type="button" className="btn-danger" onClick={() => setDeleteConfirm(app)}>Delete</button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -960,4 +1039,23 @@ const styles = {
   policyInputCol: { flex: 1, minWidth: 0 },
   policyLabel: { display: 'block', fontSize: 'var(--text-small)', fontWeight: 'var(--font-weight-medium)', color: 'var(--color-text-charcoal)', paddingTop: 'var(--space-2)' },
   policyInput: { width: '100%', maxWidth: 120, padding: 'var(--space-2) var(--space-3)', border: '1px solid var(--color-border-medium)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-base)' },
+  fileInput: { display: 'block', marginBottom: 'var(--space-2)', fontSize: 'var(--text-small)', maxWidth: 400 },
+  helpText: { margin: '0 0 var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)', maxWidth: 480 },
+  iconPreviewRow: { display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', flexWrap: 'wrap' },
+  iconPreviewImg: { width: 48, height: 48, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--color-border-light)' },
+  tableCellIcon: { padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--color-border-light)', verticalAlign: 'middle', width: 56 },
+  tableIconImg: { width: 36, height: 36, borderRadius: 8, objectFit: 'cover', display: 'block' },
+  tableIconInitials: {
+    display: 'inline-flex',
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: '#A84335',
+    color: '#fff',
+    fontWeight: 700,
+    fontSize: 11,
+    fontFamily: 'var(--font-heading, system-ui, sans-serif)',
+  },
 };

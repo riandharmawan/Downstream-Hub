@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
+import { applicationInitials } from '../utils/applicationInitials';
+import { resolveIconSrc } from '../utils/resolveIconSrc';
 
 export default function Dashboard() {
   const { user, token, logout } = useAuth();
@@ -19,13 +21,26 @@ export default function Dashboard() {
 
   async function handleAppClick(app) {
     setRedirecting(app.id);
+    setError('');
     try {
       const { bridgeUrl } = await apiRequest(
         `/api/sso/redirect?applicationId=${encodeURIComponent(app.id)}`,
         {},
         token
       );
-      window.location.href = bridgeUrl;
+      // Do not pass noopener in open() — with noopener many browsers return null even when the tab opens,
+      // which falsely looked like "popup blocked". Open first, then drop opener reference.
+      const newTab = window.open(bridgeUrl, '_blank');
+      if (newTab) {
+        try {
+          newTab.opener = null;
+        } catch {
+          /* ignore */
+        }
+      } else {
+        window.location.href = bridgeUrl;
+      }
+      setRedirecting(null);
     } catch (err) {
       setError(err.error || 'Redirect failed');
       setRedirecting(null);
@@ -57,7 +72,9 @@ export default function Dashboard() {
           <p style={styles.empty}>No applications yet. {user?.role === 'Admin' && 'Add some in Admin.'}</p>
         ) : (
           <div style={styles.grid}>
-            {applications.map((app) => (
+            {applications.map((app) => {
+              const iconSrc = resolveIconSrc(app.icon_url);
+              return (
               <button
                 key={app.id}
                 type="button"
@@ -66,17 +83,20 @@ export default function Dashboard() {
                 disabled={!!redirecting}
               >
                 <div style={styles.cardIcon}>
-                  {app.icon_url ? (
-                    <img src={app.icon_url} alt="" style={styles.iconImg} />
+                  {iconSrc ? (
+                    <img src={iconSrc} alt="" style={styles.iconImg} />
                   ) : (
-                    <span style={styles.iconPlaceholder}>App</span>
+                    <span style={styles.iconInitials} title={app.name}>
+                      {applicationInitials(app.name)}
+                    </span>
                   )}
                 </div>
                 <div style={styles.cardName}>{app.name}</div>
                 {app.description && <div style={styles.cardDesc}>{app.description}</div>}
                 {redirecting === app.id && <div style={styles.redirecting}>Opening…</div>}
               </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </main>
@@ -99,9 +119,21 @@ const styles = {
   empty: { color: 'var(--color-text-steel)', fontSize: 'var(--text-small)' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 'var(--space-3)' },
   card: { background: 'var(--color-bg-white)', border: '1px solid var(--color-border-light)', borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', textAlign: 'center', cursor: 'pointer', boxShadow: 'var(--shadow-sm)', position: 'relative', transition: 'border-color var(--duration-fast) var(--easing-default)' },
-  cardIcon: { width: 48, height: 48, margin: '0 auto var(--space-3)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--color-bg-lighter)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  cardIcon: { width: 48, height: 48, margin: '0 auto var(--space-3)', borderRadius: '12px', overflow: 'hidden', background: 'var(--color-bg-lighter)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   iconImg: { width: '100%', height: '100%', objectFit: 'cover' },
-  iconPlaceholder: { fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)' },
+  iconInitials: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: '#A84335',
+    color: '#fff',
+    fontWeight: 700,
+    fontSize: '13px',
+    letterSpacing: '0.04em',
+    fontFamily: 'var(--font-heading, system-ui, sans-serif)',
+  },
   cardName: { fontWeight: 'var(--font-weight-semibold)', marginBottom: 'var(--space-1)', color: 'var(--color-text-charcoal)' },
   cardDesc: { fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)', lineHeight: 'var(--line-height-default)' },
   redirecting: { marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--color-primary)' },
