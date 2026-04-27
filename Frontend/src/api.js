@@ -8,9 +8,17 @@ export async function apiRequest(path, options = {}, token = null) {
   const url = getApiUrl(path);
   const headers = { 'Content-Type': 'application/json', ...options.headers };
   if (token) headers.Authorization = `Bearer ${token}`;
+  const csrfCookie = document.cookie
+    .split(';')
+    .map((p) => p.trim())
+    .find((p) => p.startsWith('hub_csrf='));
+  if (csrfCookie) {
+    const csrf = decodeURIComponent(csrfCookie.slice('hub_csrf='.length));
+    if (csrf) headers['x-csrf-token'] = csrf;
+  }
   let res;
   try {
-    res = await fetch(url, { ...options, headers });
+    res = await fetch(url, { ...options, headers, credentials: 'include' });
   } catch (e) {
     const isNetwork =
       e instanceof TypeError &&
@@ -34,9 +42,14 @@ export async function apiUpload(path, file, token) {
   formData.append('file', file);
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
+  const csrfCookie = document.cookie
+    .split(';')
+    .map((p) => p.trim())
+    .find((p) => p.startsWith('hub_csrf='));
+  if (csrfCookie) headers['x-csrf-token'] = decodeURIComponent(csrfCookie.slice('hub_csrf='.length));
   let res;
   try {
-    res = await fetch(url, { method: 'POST', body: formData, headers });
+    res = await fetch(url, { method: 'POST', body: formData, headers, credentials: 'include' });
   } catch (e) {
     const isNetwork =
       e instanceof TypeError &&

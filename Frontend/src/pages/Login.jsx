@@ -7,8 +7,10 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [mfaChallenge, setMfaChallenge] = useState(null);
+  const [otp, setOtp] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const { login } = useAuth();
+  const { login, verifyMfa } = useAuth();
   const navigate = useNavigate();
   const successMessage = location.state?.message;
 
@@ -17,7 +19,12 @@ export default function Login() {
     setError('');
     setSubmitting(true);
     try {
-      await login(email, password);
+      const result = await login(email, password);
+      if (result?.mfa_required) {
+        setMfaChallenge(result);
+        setError('');
+        return;
+      }
       navigate('/', { replace: true });
     } catch (err) {
       if (err.code === 'PASSWORD_EXPIRED') {
@@ -35,11 +42,26 @@ export default function Login() {
     }
   }
 
+  async function handleMfaSubmit(e) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError('');
+    try {
+      await verifyMfa(mfaChallenge?.challenge_id, otp);
+      navigate('/', { replace: true });
+    } catch (err) {
+      setError(err.error || 'Verification failed');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <div style={styles.page}>
       <div style={styles.card}>
         <h1 style={styles.title}>Downstream Hub</h1>
         <p style={styles.subtitle}>Sign in to access your tools</p>
+        {!mfaChallenge ? (
         <form onSubmit={handleSubmit} style={styles.form}>
           {successMessage && <div style={styles.success}>{successMessage}</div>}
           {error && <div style={styles.error}>{error}</div>}
@@ -65,6 +87,23 @@ export default function Login() {
             {submitting ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+        ) : (
+        <form onSubmit={handleMfaSubmit} style={styles.form}>
+          <div style={styles.success}>Verification code sent to your email.</div>
+          {error && <div style={styles.error}>{error}</div>}
+          <input
+            type="text"
+            placeholder="6-digit verification code"
+            value={otp}
+            onChange={(e) => setOtp(e.target.value)}
+            required
+            style={styles.input}
+          />
+          <button type="submit" disabled={submitting} className="btn-primary" style={styles.button}>
+            {submitting ? 'Verifying…' : 'Verify and continue'}
+          </button>
+        </form>
+        )}
         <p style={styles.footer}>
           <Link to="/forgot-password">Forgot password?</Link>
         </p>

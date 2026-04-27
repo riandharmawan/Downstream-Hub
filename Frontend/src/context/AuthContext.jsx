@@ -5,41 +5,41 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(() => localStorage.getItem('token'));
-  const [loading, setLoading] = useState(!!token);
+  const [token, setToken] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!token) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
     setLoading(true);
-    apiRequest('/api/auth/me', {}, token)
+    apiRequest('/api/auth/me')
       .then((data) => setUser(data.user))
       .catch(() => {
-        localStorage.removeItem('token');
-        setToken(null);
         setUser(null);
       })
       .finally(() => setLoading(false));
-  }, [token]);
+  }, []);
 
   const login = async (email, password) => {
     const data = await apiRequest('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    setLoading(true);
-    localStorage.setItem('token', data.token);
-    setToken(data.token);
-    setUser(data.user);
+    if (data.mfa_required) return data;
+    setToken(data.token || null);
+    setUser(data.user || null);
     return data;
   };
 
-  /** Set session after e.g. change-password-expired returns token (no password in context). */
+  const verifyMfa = async (challenge_id, otp) => {
+    const data = await apiRequest('/api/auth/mfa/verify', {
+      method: 'POST',
+      body: JSON.stringify({ challenge_id, otp }),
+    });
+    setToken(data.token || null);
+    setUser(data.user || null);
+    return data;
+  };
+
   const setSession = (newToken, newUser) => {
-    if (newToken) localStorage.setItem('token', newToken);
     setToken(newToken || null);
     setUser(newUser || null);
   };
@@ -49,21 +49,23 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: JSON.stringify({ email, password, password_retype, business_unit_id: business_unit_id || undefined }),
     });
-    setLoading(true);
-    localStorage.setItem('token', data.token);
-    setToken(data.token);
-    setUser(data.user);
+    setToken(data.token || null);
+    setUser(data.user || null);
     return data;
   };
 
-  const logout = () => {
-    localStorage.removeItem('token');
+  const logout = async () => {
+    try {
+      await apiRequest('/api/auth/logout', { method: 'POST' }, token);
+    } catch {
+      /* ignore */
+    }
     setToken(null);
     setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout, setSession }}>
+    <AuthContext.Provider value={{ user, token, loading, login, verifyMfa, register, logout, setSession }}>
       {children}
     </AuthContext.Provider>
   );

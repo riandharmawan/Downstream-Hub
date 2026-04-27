@@ -15,6 +15,8 @@ const passwordPolicyDb = require('../db/passwordPolicyDb');
 const passwordHistoryDb = require('../db/passwordHistoryDb');
 const passwordResetDb = require('../db/passwordResetDb');
 const usersDb = require('../db/usersDb');
+const authSessionsDb = require('../db/authSessionsDb');
+const mfaDb = require('../db/mfaDb');
 const { validatePassword } = require('../lib/passwordValidation');
 const { signAccessToken } = require('../lib/authToken');
 const { authMiddleware } = require('../middleware/auth');
@@ -22,6 +24,70 @@ const { auditLog, getClientIp } = require('../middleware/audit');
 const mailer = require('../lib/mailer');
 
 const router = express.Router();
+const SESSION_COOKIE = process.env.AUTH_SESSION_COOKIE || 'hub_session';
+const CSRF_COOKIE = process.env.AUTH_CSRF_COOKIE || 'hub_csrf';
+const SESSION_TTL_MS = Math.max(10 * 60 * 1000, parseInt(process.env.AUTH_SESSION_TTL_MS || '604800000', 10));
+const MFA_CHALLENGE_TTL_SECONDS = Math.max(60, parseInt(process.env.MFA_CHALLENGE_TTL_SECONDS || '300', 10));
+const MFA_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.MFA_MAX_ATTEMPTS || '5', 10));
+const MFA_ENABLED = process.env.MFA_ENABLED === '1';
+
+function setSessionCookies(res, sessionToken, csrfToken) {
+  const secure = process.env.NODE_ENV === 'production';
+  const sameSite = secure ? 'none' : 'lax';
+  const base = {
+    secure,
+    sameSite,
+    path: '/',
+    maxAge: SESSION_TTL_MS,
+  };
+  res.cookie(SESSION_COOKIE, sessionToken, { ...base, httpOnly: true });
+  res.cookie(CSRF_COOKIE, csrfToken, { ...base, httpOnly: false });
+}
+
+function clearSessionCookies(res) {
+  const secure = process.env.NODE_ENV === 'production';
+  const sameSite = secure ? 'none' : 'lax';
+  res.clearCookie(SESSION_COOKIE, { path: '/', secure, sameSite });
+  res.clearCookie(CSRF_COOKIE, { path: '/', secure, sameSite });
+}
+
+function generateSessionToken() {
+  return crypto.randomBytes(48).toString('base64url');
+}
+
+function deviceHashFromRequest(req) {
+  const ua = req.headers['user-agent'] || 'unknown';
+  const ip = getClientIp(req) || 'unknown';
+  return crypto.createHash('sha256').update(`${ua}|${ip}`).digest('hex');
+}
+
+function generateOtpCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function hashOtp(raw) {
+  return crypto.createHash('sha256').update(String(raw), 'utf8').digest('hex');
+}
+
+function evaluateRisk({ knownDevice, req }) {
+  let score = 0;
+  const reasons = [];
+  if (!knownDevice) {
+    score += 40;
+    reasons.push('new_device');
+  }
+  const ip = getClientIp(req) || '';
+  if (ip && !ip.startsWith('10.') && !ip.startsWith('192.168.') && !ip.startsWith('127.')) {
+    score += 10;
+    reasons.push('non_private_network');
+  }
+  const hour = new Date().getHours();
+  if (hour < 5 || hour > 22) {
+    score += 10;
+    reasons.push('odd_login_hour');
+  }
+  return { score, reasons };
+}
 
 const FORGOT_PASSWORD_MESSAGE =
   'If an account is associated with this email, you will receive instructions shortly.';
@@ -110,6 +176,15 @@ router.post('/register', registerLimit, async (req, res) => {
     const role = n === 0 ? 'Admin' : 'Employee';
     const user = await usersDb.create(pool, { email: emailNorm, password_hash, role, business_unit_id: buId });
     const token = signAccessToken(user);
+    const sessionToken = generateSessionToken();
+    const csrfToken = generateSessionToken();
+    await authSessionsDb.create(pool, {
+      userId: user.id,
+      sessionToken,
+      csrfToken,
+      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+    });
+    setSessionCookies(res, sessionToken, csrfToken);
     res.status(201).json({ user: { id: user.id, email: user.email, role: user.role, business_unit_id: user.business_unit_id }, token });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
@@ -146,7 +221,57 @@ router.post('/login', loginLimit, async (req, res) => {
         return res.status(403).json({ error: 'Password expired', code: 'PASSWORD_EXPIRED' });
       }
     }
+    const trusted = await mfaDb.getTrustedDevice(pool, { userId: user.id, deviceHash: deviceHashFromRequest(req) });
+    const risk = evaluateRisk({ knownDevice: !!trusted, req });
+    const needsPeriodicMfa = !user.last_mfa_verified_at || (
+      Date.now() - new Date(user.last_mfa_verified_at).getTime() >
+      (policy.mfa_reverify_days || 14) * 24 * 60 * 60 * 1000
+    );
+    const needsRiskMfa = risk.score >= (policy.mfa_risk_threshold || 50);
+    if (MFA_ENABLED && user.mfa_enabled && (needsPeriodicMfa || needsRiskMfa)) {
+      const challengeId = crypto.randomUUID();
+      const otp = generateOtpCode();
+      await mfaDb.createChallenge(pool, {
+        userId: user.id,
+        reason: needsRiskMfa ? 'risk' : 'periodic',
+        challengeId,
+        otpHash: hashOtp(otp),
+        expiresAt: new Date(Date.now() + MFA_CHALLENGE_TTL_SECONDS * 1000),
+        maxAttempts: MFA_MAX_ATTEMPTS,
+      });
+      await mfaDb.insertRiskEvent(pool, {
+        userId: user.id,
+        email: user.email,
+        ipAddress: getClientIp(req),
+        userAgent: req.headers['user-agent'] || '',
+        deviceHash: deviceHashFromRequest(req),
+        riskScore: risk.score,
+        reasons: risk.reasons,
+        decision: needsRiskMfa ? 'MFA_REQUIRED_RISK' : 'MFA_REQUIRED_PERIODIC',
+      });
+      try {
+        await mailer.sendOtpEmail({ to: user.email, otp, ttlSeconds: MFA_CHALLENGE_TTL_SECONDS });
+      } catch (mailErr) {
+        console.error('MFA OTP email error:', mailErr.message);
+      }
+      return res.status(202).json({
+        mfa_required: true,
+        challenge_id: challengeId,
+        expires_in: MFA_CHALLENGE_TTL_SECONDS,
+        reason: needsRiskMfa ? 'risk' : 'periodic',
+      });
+    }
+
     const token = signAccessToken(user);
+    const sessionToken = generateSessionToken();
+    const csrfToken = generateSessionToken();
+    await authSessionsDb.create(pool, {
+      userId: user.id,
+      sessionToken,
+      csrfToken,
+      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+    });
+    setSessionCookies(res, sessionToken, csrfToken);
     const client = await pool.connect();
     try {
       await auditLog(client, {
@@ -165,6 +290,69 @@ router.post('/login', loginLimit, async (req, res) => {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Login failed' });
   }
+});
+
+// POST /api/auth/mfa/verify — completes pending challenge and issues full session
+router.post('/mfa/verify', async (req, res) => {
+  try {
+    const challengeId = String(req.body?.challenge_id || '').trim();
+    const otp = String(req.body?.otp || '').trim();
+    if (!challengeId || !otp) return res.status(400).json({ error: 'challenge_id and otp are required' });
+
+    const challenge = await mfaDb.getActiveChallenge(pool, challengeId);
+    if (!challenge) return res.status(400).json({ error: 'Invalid or expired challenge' });
+    const attempt = await mfaDb.markChallengeAttempt(pool, challenge.id);
+    if (attempt && attempt.attempts > attempt.max_attempts) {
+      return res.status(429).json({ error: 'Too many attempts' });
+    }
+    if (hashOtp(otp) !== challenge.otp_hash) {
+      return res.status(401).json({ error: 'Invalid verification code' });
+    }
+
+    await mfaDb.consumeChallenge(pool, challenge.id);
+    await mfaDb.updateLastMfaVerifiedAt(pool, challenge.user_id);
+
+    const user = await usersDb.getById(pool, challenge.user_id);
+    if (!user) return res.status(400).json({ error: 'User not found' });
+    const token = signAccessToken(user);
+    const sessionToken = generateSessionToken();
+    const csrfToken = generateSessionToken();
+    await authSessionsDb.create(pool, {
+      userId: user.id,
+      sessionToken,
+      csrfToken,
+      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+    });
+    await mfaDb.upsertTrustedDevice(pool, {
+      userId: user.id,
+      deviceHash: deviceHashFromRequest(req),
+      ipAddress: getClientIp(req),
+      expiresAt: new Date(Date.now() + ((await passwordPolicyDb.get(pool)).mfa_reverify_days || 14) * 24 * 60 * 60 * 1000),
+    });
+    setSessionCookies(res, sessionToken, csrfToken);
+    return res.json({ user: { id: user.id, email: user.email, role: user.role, business_unit_id: user.business_unit_id }, token });
+  } catch (err) {
+    console.error('MFA verify error:', err);
+    return res.status(500).json({ error: 'Failed to verify code' });
+  }
+});
+
+// POST /api/auth/logout — revoke cookie session
+router.post('/logout', async (req, res) => {
+  try {
+    const src = req.headers.cookie || '';
+    const map = src.split(';').reduce((acc, p) => {
+      const [k, ...rest] = p.split('=');
+      if (k && rest.length) acc[k.trim()] = decodeURIComponent(rest.join('=').trim());
+      return acc;
+    }, {});
+    const sessionToken = map[SESSION_COOKIE];
+    if (sessionToken) await authSessionsDb.revokeBySessionToken(pool, sessionToken);
+  } catch (err) {
+    console.error('Logout revoke warning:', err.message);
+  }
+  clearSessionCookies(res);
+  res.json({ message: 'Signed out' });
 });
 
 // POST /api/auth/change-password-expired — no auth; for users blocked by password expiry
@@ -214,6 +402,15 @@ router.post('/change-password-expired', async (req, res) => {
     }
     const tv = await usersDb.getTokenVersion(pool, user.id);
     const token = signAccessToken({ id: user.id, email: user.email, role: user.role, token_version: tv });
+    const sessionToken = generateSessionToken();
+    const csrfToken = generateSessionToken();
+    await authSessionsDb.create(pool, {
+      userId: user.id,
+      sessionToken,
+      csrfToken,
+      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+    });
+    setSessionCookies(res, sessionToken, csrfToken);
     const client = await pool.connect();
     try {
       await auditLog(client, {

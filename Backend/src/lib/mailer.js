@@ -86,6 +86,29 @@ async function sendPasswordChangedEmail({ to }) {
   return { skipped: false };
 }
 
+/**
+ * @param {{ to: string, otp: string, ttlSeconds: number }} opts
+ */
+async function sendOtpEmail({ to, otp, ttlSeconds }) {
+  const subject = 'Your Downstream Hub verification code';
+  const text = `Your verification code is ${otp}. It expires in ${Math.max(1, Math.floor(ttlSeconds / 60))} minute(s).`;
+  const html = `<p>Your verification code is <strong>${escapeHtml(otp)}</strong>.</p><p>It expires in ${Math.max(1, Math.floor(ttlSeconds / 60))} minute(s).</p>`;
+
+  if (!smtpConfigured()) {
+    console.info('[mailer] SMTP not configured; MFA OTP (dev only):', otp);
+    return { skipped: true };
+  }
+  const transport = createTransport();
+  await transport.sendMail({
+    from: fromAddress(),
+    to,
+    subject,
+    text,
+    html,
+  });
+  return { skipped: false };
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -97,5 +120,6 @@ function escapeHtml(s) {
 module.exports = {
   sendPasswordResetEmail,
   sendPasswordChangedEmail,
+  sendOtpEmail,
   smtpConfigured,
 };

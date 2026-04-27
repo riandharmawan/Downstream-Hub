@@ -41,7 +41,7 @@ async function getByIdWithBuName(db, id) {
 
 async function getByEmail(db, email) {
   const { rows } = await db.query(
-    'SELECT id, email, password_hash, role, business_unit_id, password_changed_at, failed_login_attempts, locked_until, token_version FROM users WHERE email = $1 AND deleted_at IS NULL',
+    'SELECT id, email, password_hash, role, business_unit_id, password_changed_at, failed_login_attempts, locked_until, token_version, name, mfa_enabled, mfa_method, last_mfa_verified_at FROM users WHERE email = $1 AND deleted_at IS NULL',
     [email]
   );
   return rows[0] || null;

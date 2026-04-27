@@ -40,6 +40,8 @@ router.put('/password-policy', authMiddleware, requireAdmin, async (req, res) =>
     if (body.password_history_count !== undefined) payload.password_history_count = body.password_history_count;
     if (body.max_login_attempts !== undefined) payload.max_login_attempts = body.max_login_attempts;
     if (body.lockout_duration_mins !== undefined) payload.lockout_duration_mins = body.lockout_duration_mins;
+    if (body.mfa_reverify_days !== undefined) payload.mfa_reverify_days = body.mfa_reverify_days;
+    if (body.mfa_risk_threshold !== undefined) payload.mfa_risk_threshold = body.mfa_risk_threshold;
 
     if (Object.keys(payload).length === 0) {
       const policy = await passwordPolicyDb.get(pool);

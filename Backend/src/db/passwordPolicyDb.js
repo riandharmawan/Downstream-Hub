@@ -12,12 +12,15 @@ const DEFAULTS = {
   password_history_count: 5,
   max_login_attempts: 5,
   lockout_duration_mins: 30,
+  mfa_reverify_days: 14,
+  mfa_risk_threshold: 50,
 };
 
 async function get(db) {
   const { rows } = await db.query(
     `SELECT password_expiry_days, min_password_length, require_uppercase, require_lowercase,
-            require_number, require_symbol, password_history_count, max_login_attempts, lockout_duration_mins
+            require_number, require_symbol, password_history_count, max_login_attempts, lockout_duration_mins,
+            mfa_reverify_days, mfa_risk_threshold
      FROM password_policy WHERE id = 1`
   );
   const row = rows[0];
@@ -32,6 +35,8 @@ async function get(db) {
     password_history_count: row.password_history_count ?? DEFAULTS.password_history_count,
     max_login_attempts: row.max_login_attempts ?? DEFAULTS.max_login_attempts,
     lockout_duration_mins: row.lockout_duration_mins ?? DEFAULTS.lockout_duration_mins,
+    mfa_reverify_days: row.mfa_reverify_days ?? DEFAULTS.mfa_reverify_days,
+    mfa_risk_threshold: row.mfa_risk_threshold ?? DEFAULTS.mfa_risk_threshold,
   };
 }
 
@@ -79,6 +84,16 @@ async function update(db, payload) {
   if (payload.lockout_duration_mins !== undefined) {
     const v = Math.max(1, Math.min(1440, parseInt(String(payload.lockout_duration_mins), 10) || 30));
     updates.push(`lockout_duration_mins = $${idx++}`);
+    values.push(v);
+  }
+  if (payload.mfa_reverify_days !== undefined) {
+    const v = Math.max(1, Math.min(90, parseInt(String(payload.mfa_reverify_days), 10) || 14));
+    updates.push(`mfa_reverify_days = $${idx++}`);
+    values.push(v);
+  }
+  if (payload.mfa_risk_threshold !== undefined) {
+    const v = Math.max(0, Math.min(100, parseInt(String(payload.mfa_risk_threshold), 10) || 50));
+    updates.push(`mfa_risk_threshold = $${idx++}`);
     values.push(v);
   }
 

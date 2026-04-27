@@ -2,18 +2,88 @@
  * SSO: generate short-lived token; deliver via bridge page (POST body), not in URL.
  * Uses applicationsDb (excludes soft-deleted) and ssoAccessLogsDb.
  */
+const crypto = require('crypto');
 const express = require('express');
 const { pool } = require('../db/pool');
 const applicationsDb = require('../db/applicationsDb');
 const ssoAccessLogsDb = require('../db/ssoAccessLogsDb');
-const { authMiddleware } = require('../middleware/auth');
+const oidcDb = require('../db/oidcDb');
+const usersDb = require('../db/usersDb');
+const { authMiddleware, optionalAuth } = require('../middleware/auth');
 const { getClientIp } = require('../middleware/audit');
 const { SignJWT, jwtVerify } = require('jose');
+const { loadKeys, hashSha256 } = require('../lib/ssoKeyStore');
 
 const router = express.Router();
-const SSO_SECRET = process.env.SSO_TOKEN_SECRET || 'dev-sso-secret';
 const SSO_EXPIRY_SECONDS = parseInt(process.env.SSO_TOKEN_EXPIRY_SECONDS || '60', 10);
-const API_PUBLIC_URL = process.env.API_PUBLIC_URL || 'http://localhost:4000';
+const API_PUBLIC_URL = (process.env.API_PUBLIC_URL || 'http://localhost:4000').replace(/\/$/, '');
+const OIDC_CODE_TTL_SECONDS = parseInt(process.env.OIDC_CODE_TTL_SECONDS || '120', 10);
+const ENFORCE_OIDC_ONLY = process.env.SSO_ENFORCE_OIDC_ONLY === '1';
+
+function toBase64Url(buffer) {
+  return Buffer.from(buffer).toString('base64url');
+}
+
+async function signSsoToken(payload, audience) {
+  const keyStore = await loadKeys();
+  const now = Math.floor(Date.now() / 1000);
+  const claims = {
+    sub: payload.user_id,
+    user_id: payload.user_id, // kept for backward compatibility
+    email: payload.email,
+    name: payload.name || payload.email,
+    iss: keyStore.issuer,
+    aud: audience,
+    iat: now,
+  };
+
+  if (keyStore.alg === 'HS256') {
+    return new SignJWT(claims)
+      .setProtectedHeader({ alg: 'HS256', kid: keyStore.kid, typ: 'JWT' })
+      .setIssuedAt(now)
+      .setExpirationTime(now + SSO_EXPIRY_SECONDS)
+      .sign(keyStore.hsSecret);
+  }
+  return new SignJWT(claims)
+    .setProtectedHeader({ alg: keyStore.alg, kid: keyStore.kid, typ: 'JWT' })
+    .setIssuedAt(now)
+    .setIssuer(keyStore.issuer)
+    .setAudience(audience)
+    .setExpirationTime(now + SSO_EXPIRY_SECONDS)
+    .sign(keyStore.privateKey);
+}
+
+async function signBridgeRef(refPayload) {
+  const keyStore = await loadKeys();
+  const now = Math.floor(Date.now() / 1000);
+  if (keyStore.alg === 'HS256') {
+    return new SignJWT(refPayload)
+      .setProtectedHeader({ alg: 'HS256', typ: 'JWT', kid: keyStore.kid })
+      .setIssuedAt(now)
+      .setExpirationTime(now + 60)
+      .sign(keyStore.hsSecret);
+  }
+  return new SignJWT(refPayload)
+    .setProtectedHeader({ alg: keyStore.alg, typ: 'hub-bridge-ref', kid: keyStore.kid })
+    .setIssuedAt(now)
+    .setExpirationTime(now + 60)
+    .sign(keyStore.privateKey);
+}
+
+async function verifyBridgeRef(ref) {
+  const keyStore = await loadKeys();
+  if (keyStore.alg === 'HS256') {
+    const { payload } = await jwtVerify(ref, keyStore.hsSecret);
+    return payload;
+  }
+  const { payload } = await jwtVerify(ref, keyStore.publicKey);
+  return payload;
+}
+
+function parseRedirectUriList(app) {
+  if (!Array.isArray(app.oidc_redirect_uris)) return [];
+  return app.oidc_redirect_uris.map((x) => String(x || '').trim()).filter(Boolean);
+}
 
 /**
  * GET /api/sso/redirect?applicationId=uuid
@@ -37,22 +107,47 @@ router.get('/redirect', authMiddleware, async (req, res) => {
     const payload = {
       user_id: req.user.id,
       email: req.user.email,
-      iat: Math.floor(Date.now() / 1000),
+      name: req.user.email,
     };
-    const secret = new TextEncoder().encode(SSO_SECRET);
-    const token = await new SignJWT(payload)
-      .setProtectedHeader({ alg: 'HS256' })
-      .setIssuedAt(payload.iat)
-      .setExpirationTime(payload.iat + SSO_EXPIRY_SECONDS)
-      .sign(secret);
+    const audience = app.oauth_client_id || app.id;
+    const mode = app.sso_mode === 'oidc' ? 'oidc' : 'bridge';
+    if (ENFORCE_OIDC_ONLY && mode !== 'oidc') {
+      return res.status(400).json({
+        error: 'SSO OIDC-only enforcement is enabled. This application must be configured with sso_mode=oidc.',
+      });
+    }
+    const token = await signSsoToken(payload, audience);
 
-    const refPayload = { token, targetUrl, applicationId: app.id };
-    const ref = await new SignJWT(refPayload)
-      .setProtectedHeader({ alg: 'HS256' })
-      .setExpirationTime('1m')
-      .sign(secret);
-
-    const bridgeUrl = `${API_PUBLIC_URL}/api/sso/bridge?ref=${encodeURIComponent(ref)}`;
+    let bridgeUrl;
+    if (mode === 'oidc') {
+      const redirectUris = parseRedirectUriList(app);
+      const redirectUri = redirectUris[0];
+      if (!redirectUri) {
+        return res.status(400).json({ error: 'Application is in OIDC mode but has no redirect URI configured' });
+      }
+      const codeVerifier = toBase64Url(crypto.randomBytes(48));
+      const codeChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
+      const state = toBase64Url(crypto.randomBytes(16));
+      const nonce = toBase64Url(crypto.randomBytes(12));
+      const refPayload = {
+        user_id: req.user.id,
+        client_id: audience,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: 'openid profile email',
+        state,
+        nonce,
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+        code_verifier: codeVerifier,
+      };
+      const ref = await signBridgeRef(refPayload);
+      bridgeUrl = `${API_PUBLIC_URL}/api/sso/authorize?ref=${encodeURIComponent(ref)}&cv=${encodeURIComponent(codeVerifier)}`;
+    } else {
+      const refPayload = { token, targetUrl, applicationId: app.id };
+      const ref = await signBridgeRef(refPayload);
+      bridgeUrl = `${API_PUBLIC_URL}/api/sso/bridge?ref=${encodeURIComponent(ref)}`;
+    }
 
     await ssoAccessLogsDb.insert(pool, {
       user_id: req.user.id,
@@ -61,7 +156,7 @@ router.get('/redirect', authMiddleware, async (req, res) => {
       ip_address: getClientIp(req),
     });
 
-    res.json({ bridgeUrl });
+    res.json({ bridgeUrl, mode });
   } catch (err) {
     console.error('SSO redirect error:', err);
     res.status(500).json({ error: 'Failed to generate redirect' });
@@ -75,14 +170,16 @@ router.get('/redirect', authMiddleware, async (req, res) => {
  * Target apps must accept POST and read the token from body (or implement same contract).
  */
 router.get('/bridge', async (req, res) => {
+  if (ENFORCE_OIDC_ONLY) {
+    return res.status(410).send('Bridge mode is disabled by SSO OIDC-only enforcement.');
+  }
   try {
     const ref = req.query.ref;
     if (!ref) {
       res.status(400).send('Missing ref');
       return;
     }
-    const secret = new TextEncoder().encode(SSO_SECRET);
-    const { payload } = await jwtVerify(ref, secret);
+    const payload = await verifyBridgeRef(ref);
     const { token, targetUrl } = payload;
     if (!token || !targetUrl) {
       res.status(400).send('Invalid ref');
@@ -106,6 +203,127 @@ router.get('/bridge', async (req, res) => {
   } catch (err) {
     console.error('SSO bridge error:', err);
     res.status(400).send('Invalid or expired link. Please try again from the hub.');
+  }
+});
+
+router.get('/jwks', async (_req, res) => {
+  const keyStore = await loadKeys();
+  res.json(keyStore.jwks);
+});
+
+router.get('/.well-known/openid-configuration', async (_req, res) => {
+  const keyStore = await loadKeys();
+  res.json({
+    issuer: keyStore.issuer,
+    authorization_endpoint: `${API_PUBLIC_URL}/api/sso/authorize`,
+    token_endpoint: `${API_PUBLIC_URL}/api/sso/token`,
+    jwks_uri: `${API_PUBLIC_URL}/api/sso/jwks`,
+    response_types_supported: ['code'],
+    subject_types_supported: ['public'],
+    id_token_signing_alg_values_supported: [keyStore.alg],
+    code_challenge_methods_supported: ['S256'],
+    scopes_supported: ['openid', 'profile', 'email'],
+    token_endpoint_auth_methods_supported: ['none'],
+  });
+});
+
+router.get('/authorize', optionalAuth, async (req, res) => {
+  try {
+    const fromRef = req.query.ref ? await verifyBridgeRef(String(req.query.ref)) : {};
+    let actingUser = req.user;
+    if (!actingUser && fromRef.user_id) {
+      const u = await usersDb.getById(pool, String(fromRef.user_id));
+      if (u) actingUser = { id: u.id, email: u.email, role: u.role };
+    }
+    if (!actingUser) return res.status(401).send('Authentication required');
+    const clientId = String(req.query.client_id || fromRef.client_id || '').trim();
+    const redirectUri = String(req.query.redirect_uri || fromRef.redirect_uri || '').trim();
+    const responseType = String(req.query.response_type || fromRef.response_type || 'code');
+    const codeChallenge = String(req.query.code_challenge || fromRef.code_challenge || '').trim();
+    const codeChallengeMethod = String(req.query.code_challenge_method || fromRef.code_challenge_method || 'S256').trim();
+    const scope = String(req.query.scope || fromRef.scope || 'openid profile email');
+    const state = String(req.query.state || fromRef.state || '');
+    const nonce = String(req.query.nonce || fromRef.nonce || '');
+
+    if (responseType !== 'code') return res.status(400).send('Only response_type=code is supported');
+    if (!clientId || !redirectUri || !codeChallenge) return res.status(400).send('Missing required OIDC parameters');
+    if (codeChallengeMethod !== 'S256') return res.status(400).send('Only code_challenge_method=S256 is supported');
+
+    const { rows } = await pool.query(
+      'SELECT id, oauth_client_id, oidc_redirect_uris, sso_mode FROM applications WHERE oauth_client_id = $1 AND deleted_at IS NULL',
+      [clientId]
+    );
+    const app = rows[0];
+    if (!app || app.sso_mode !== 'oidc') return res.status(400).send('Unknown OIDC client');
+    const allowedUris = Array.isArray(app.oidc_redirect_uris) ? app.oidc_redirect_uris : [];
+    if (!allowedUris.includes(redirectUri)) return res.status(400).send('redirect_uri is not allowed');
+
+    const code = toBase64Url(crypto.randomBytes(32));
+    const expiresAt = new Date(Date.now() + OIDC_CODE_TTL_SECONDS * 1000);
+    await oidcDb.insertAuthCode(pool, {
+      rawCode: code,
+      userId: actingUser.id,
+      applicationId: app.id,
+      clientId,
+      redirectUri,
+      scope,
+      nonce,
+      codeChallenge,
+      codeChallengeMethod,
+      expiresAt,
+    });
+
+    const url = new URL(redirectUri);
+    url.searchParams.set('code', code);
+    if (state) url.searchParams.set('state', state);
+    if (fromRef.code_verifier) {
+      // Transitional helper for dashboard-initiated flow so target apps can exchange code.
+      url.searchParams.set('code_verifier', String(fromRef.code_verifier));
+    }
+
+    res.redirect(url.toString());
+  } catch (err) {
+    console.error('OIDC authorize error:', err);
+    res.status(500).send('Authorization failed');
+  }
+});
+
+router.post('/token', express.json(), async (req, res) => {
+  try {
+    const grantType = String(req.body?.grant_type || '');
+    const code = String(req.body?.code || '');
+    const redirectUri = String(req.body?.redirect_uri || '');
+    const clientId = String(req.body?.client_id || '');
+    const codeVerifier = String(req.body?.code_verifier || '');
+    if (grantType !== 'authorization_code') return res.status(400).json({ error: 'unsupported_grant_type' });
+    if (!code || !redirectUri || !clientId || !codeVerifier) return res.status(400).json({ error: 'invalid_request' });
+
+    const record = await oidcDb.consumeAuthCode(pool, code);
+    if (!record) return res.status(400).json({ error: 'invalid_grant' });
+    if (record.client_id !== clientId || record.redirect_uri !== redirectUri) return res.status(400).json({ error: 'invalid_grant' });
+
+    const expectedChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
+    if (record.code_challenge_method !== 'S256' || expectedChallenge !== record.code_challenge) {
+      return res.status(400).json({ error: 'invalid_grant' });
+    }
+
+    const { rows } = await pool.query('SELECT id, email, name FROM users WHERE id = $1 AND deleted_at IS NULL', [record.user_id]);
+    const user = rows[0];
+    if (!user) return res.status(400).json({ error: 'invalid_grant' });
+
+    const idToken = await signSsoToken(
+      { user_id: user.id, email: user.email, name: user.name || user.email },
+      clientId
+    );
+    return res.json({
+      token_type: 'Bearer',
+      expires_in: SSO_EXPIRY_SECONDS,
+      id_token: idToken,
+      scope: record.scope,
+    });
+  } catch (err) {
+    console.error('OIDC token error:', err);
+    return res.status(500).json({ error: 'server_error' });
   }
 });
 

@@ -23,7 +23,16 @@ export default function Admin() {
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: '', description: '', icon_url: '', target_url: '', target_bu_id: '' });
+  const [form, setForm] = useState({
+    name: '',
+    description: '',
+    icon_url: '',
+    target_url: '',
+    target_bu_id: '',
+    sso_mode: 'bridge',
+    oauth_client_id: '',
+    oidc_redirect_uris: '',
+  });
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [saving, setSaving] = useState(false);
   const [iconUploading, setIconUploading] = useState(false);
@@ -148,7 +157,16 @@ export default function Admin() {
 
   function openCreate() {
     setEditing(null);
-    setForm({ name: '', description: '', icon_url: '', target_url: '', target_bu_id: '' });
+    setForm({
+      name: '',
+      description: '',
+      icon_url: '',
+      target_url: '',
+      target_bu_id: '',
+      sso_mode: 'bridge',
+      oauth_client_id: '',
+      oidc_redirect_uris: '',
+    });
     setShowForm(true);
   }
 
@@ -160,6 +178,9 @@ export default function Admin() {
       icon_url: app.icon_url || '',
       target_url: app.target_url || '',
       target_bu_id: app.target_bu_id || '',
+      sso_mode: app.sso_mode || 'bridge',
+      oauth_client_id: app.oauth_client_id || '',
+      oidc_redirect_uris: Array.isArray(app.oidc_redirect_uris) ? app.oidc_redirect_uris.join('\n') : '',
     });
     setShowForm(true);
   }
@@ -416,12 +437,19 @@ export default function Admin() {
     setError('');
     setSaving(true);
     try {
+      const redirectUris = String(form.oidc_redirect_uris || '')
+        .split(/\r?\n|,/)
+        .map((v) => v.trim())
+        .filter(Boolean);
       const payload = {
         name: form.name,
         description: form.description,
         icon_url: form.icon_url,
         target_url: form.target_url,
         target_bu_id: form.target_bu_id === '' ? null : form.target_bu_id,
+        sso_mode: form.sso_mode === 'oidc' ? 'oidc' : 'bridge',
+        oauth_client_id: form.oauth_client_id.trim() || null,
+        oidc_redirect_uris: redirectUris,
       };
       if (editing) {
         await apiRequest(`/api/applications/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) }, token);
@@ -432,7 +460,16 @@ export default function Admin() {
       setApplications(data.applications || []);
       setEditing(null);
       setShowForm(false);
-      setForm({ name: '', description: '', icon_url: '', target_url: '', target_bu_id: '' });
+      setForm({
+        name: '',
+        description: '',
+        icon_url: '',
+        target_url: '',
+        target_bu_id: '',
+        sso_mode: 'bridge',
+        oauth_client_id: '',
+        oidc_redirect_uris: '',
+      });
     } catch (err) {
       setError(err.error || 'Save failed');
     } finally {
@@ -849,9 +886,59 @@ export default function Admin() {
                 <option key={bu.id} value={bu.id}>{bu.name}</option>
               ))}
             </select>
+            <div style={styles.subSection}>
+              <h4 style={styles.subSectionTitle}>OIDC Setting</h4>
+              <p style={styles.helpText}>
+                Configure these when this app uses strict OIDC SSO.
+              </p>
+              <label style={styles.label}>SSO Mode</label>
+              <select
+                value={form.sso_mode || 'bridge'}
+                onChange={(e) => setForm((f) => ({ ...f, sso_mode: e.target.value }))}
+                style={styles.input}
+              >
+                <option value="bridge">Bridge (legacy)</option>
+                <option value="oidc">OIDC (strict)</option>
+              </select>
+              <label style={styles.label}>OAuth Client ID</label>
+              <input
+                placeholder="e.g. jps-web-client"
+                value={form.oauth_client_id || ''}
+                onChange={(e) => setForm((f) => ({ ...f, oauth_client_id: e.target.value }))}
+                style={styles.input}
+              />
+              <label style={styles.label}>OIDC Redirect URIs</label>
+              <textarea
+                placeholder="One per line, e.g.&#10;http://localhost:3001/auth/callback"
+                value={form.oidc_redirect_uris || ''}
+                onChange={(e) => setForm((f) => ({ ...f, oidc_redirect_uris: e.target.value }))}
+                rows={4}
+                style={styles.textarea}
+              />
+              <p style={styles.helpText}>You can enter one URI per line (or comma-separated).</p>
+            </div>
             <div style={styles.formActions}>
               <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-              <button type="button" className="btn-secondary" onClick={() => { setEditing(null); setShowForm(false); setForm({ name: '', description: '', icon_url: '', target_url: '', target_bu_id: '' }); }}>Cancel</button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => {
+                  setEditing(null);
+                  setShowForm(false);
+                  setForm({
+                    name: '',
+                    description: '',
+                    icon_url: '',
+                    target_url: '',
+                    target_bu_id: '',
+                    sso_mode: 'bridge',
+                    oauth_client_id: '',
+                    oidc_redirect_uris: '',
+                  });
+                }}
+              >
+                Cancel
+              </button>
             </div>
           </form>
         )}
@@ -1043,6 +1130,9 @@ const styles = {
   helpText: { margin: '0 0 var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)', maxWidth: 480 },
   iconPreviewRow: { display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', flexWrap: 'wrap' },
   iconPreviewImg: { width: 48, height: 48, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--color-border-light)' },
+  subSection: { marginTop: 'var(--space-2)', marginBottom: 'var(--space-2)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--color-border-light)', maxWidth: 520 },
+  subSectionTitle: { margin: '0 0 var(--space-2)', fontSize: 'var(--text-base)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
+  textarea: { display: 'block', width: '100%', maxWidth: 520, padding: 'var(--space-2) var(--space-3)', marginBottom: 'var(--space-3)', border: '1px solid var(--color-border-medium)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-base)', resize: 'vertical', fontFamily: 'inherit' },
   tableCellIcon: { padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--color-border-light)', verticalAlign: 'middle', width: 56 },
   tableIconImg: { width: 36, height: 36, borderRadius: 8, objectFit: 'cover', display: 'block' },
   tableIconInitials: {

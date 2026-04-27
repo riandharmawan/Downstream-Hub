@@ -3,6 +3,7 @@ node_modules/
 
 # Environment
 .env
+Backend/.env
 .env.local
 .env.testing
 .env.production
@@ -32,6 +33,9 @@ Thumbs.db
 
 # Uploaded app icons (created at runtime)
 Backend/uploads/
+
+# Local SSO keypair (use env or secret manager in deploy)
+Backend/keys/
 
 # Temp
 *.tmp

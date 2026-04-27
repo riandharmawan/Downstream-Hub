@@ -70,13 +70,23 @@ function isValidIconUrl(s) {
 }
 
 function validateAppBody(body) {
-  const { name, description, icon_url, target_url, target_bu_id } = body || {};
+  const { name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode } = body || {};
   if (!name || typeof name !== 'string' || !name.trim()) return { error: 'Name is required' };
   if (!target_url || typeof target_url !== 'string' || !target_url.trim()) return { error: 'Target URL is required' };
   if (!URL_REGEX.test(target_url.trim())) return { error: 'Target URL must be a valid http(s) URL' };
   const iconTrim = icon_url != null ? String(icon_url).trim() : '';
   if (!isValidIconUrl(iconTrim)) {
     return { error: 'Icon must be empty, a valid http(s) URL, or a hub upload path under /uploads/app-icons/' };
+  }
+  const mode = sso_mode === 'oidc' ? 'oidc' : 'bridge';
+  const clientId = oauth_client_id == null ? '' : String(oauth_client_id).trim();
+  const redirectUris = Array.isArray(oidc_redirect_uris) ? oidc_redirect_uris.map((u) => String(u).trim()).filter(Boolean) : [];
+  if (mode === 'oidc') {
+    if (!clientId) return { error: 'oauth_client_id is required when sso_mode is oidc' };
+    if (redirectUris.length === 0) return { error: 'At least one oidc_redirect_uri is required when sso_mode is oidc' };
+    for (const uri of redirectUris) {
+      if (!URL_REGEX.test(uri)) return { error: `Invalid oidc_redirect_uri: ${uri}` };
+    }
   }
   const buId = target_bu_id === null || target_bu_id === undefined || target_bu_id === '' ? null : target_bu_id;
   return {
@@ -85,6 +95,9 @@ function validateAppBody(body) {
     icon_url: iconTrim,
     target_url: target_url.trim(),
     target_bu_id: buId,
+    oauth_client_id: clientId || null,
+    oidc_redirect_uris: redirectUris,
+    sso_mode: mode,
   };
 }
 
