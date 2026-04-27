@@ -37,6 +37,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-hub}:${POSTGRES_PASSWORD:-hubsecret}@postgres:5432/${POSTGRES_DB:-downstream_hub}
     ports:
       - "4000:4000"
+    volumes:
+      - ../Backend/uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy

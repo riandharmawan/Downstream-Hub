@@ -7,7 +7,8 @@
 | **nginx-frontend.conf** | Nginx server block for serving the built SPA on port 3010 (Frontend server). |
 | **downstream-hub-backend.service** | systemd unit for the Node.js API (Backend server). |
 | **docker-compose.frontend.yml** | Frontend container on port 3010 (run on 172.28.92.56). |
-| **docker-compose.backend.yml** | Backend + PostgreSQL containers on 4000 and 5432 (run on 172.28.92.57). |
+| **docker-compose.backend.yml** | Backend + PostgreSQL containers on 4000 and 5432 (run on 172.28.92.57). Mounts `Backend/uploads`. |
+| **rebuild-backend-staging.sh** | On backend host: `git pull`, `chown` uploads for UID 1001, rebuild/recreate API container. |
 
 Full steps: **[Docs/DEPLOYMENT-ALICLOUD.md](../Docs/DEPLOYMENT-ALICLOUD.md)**. For **Docker** on the same two servers: **[Docs/DEPLOYMENT-ALICLOUD-DOCKER.md](../Docs/DEPLOYMENT-ALICLOUD-DOCKER.md)** (uses `deploy/docker-compose.frontend.yml` and `deploy/docker-compose.backend.yml`).
 
