@@ -19,9 +19,16 @@ const SSO_EXPIRY_SECONDS = parseInt(process.env.SSO_TOKEN_EXPIRY_SECONDS || '60'
 const API_PUBLIC_URL = (process.env.API_PUBLIC_URL || 'http://localhost:4000').replace(/\/$/, '');
 const OIDC_CODE_TTL_SECONDS = parseInt(process.env.OIDC_CODE_TTL_SECONDS || '120', 10);
 const ENFORCE_OIDC_ONLY = process.env.SSO_ENFORCE_OIDC_ONLY === '1';
+/** Dev/staging only: force id_token email_verified true without DB flag. */
+const OIDC_EMAIL_VERIFIED_TRUST_ALL = process.env.OIDC_EMAIL_VERIFIED_TRUST_ALL === '1';
 
 function toBase64Url(buffer) {
   return Buffer.from(buffer).toString('base64url');
+}
+
+function effectiveEmailVerified(userRow) {
+  if (OIDC_EMAIL_VERIFIED_TRUST_ALL) return true;
+  return !!userRow?.hub_oidc_email_verified_at;
 }
 
 async function signSsoToken(payload, audience) {
@@ -32,6 +39,7 @@ async function signSsoToken(payload, audience) {
     user_id: payload.user_id, // kept for backward compatibility
     email: payload.email,
     name: payload.name || payload.email,
+    email_verified: payload.email_verified === true,
     iss: keyStore.issuer,
     aud: audience,
     iat: now,
@@ -104,10 +112,12 @@ router.get('/redirect', authMiddleware, async (req, res) => {
     const targetPath = baseUrl.includes('/auth/') ? '' : '/auth/hub';
     const targetUrl = targetPath ? `${baseUrl}${targetPath}` : baseUrl;
 
+    const ssoUser = await usersDb.getForSsoToken(pool, req.user.id);
     const payload = {
       user_id: req.user.id,
       email: req.user.email,
-      name: req.user.email,
+      name: (ssoUser && ssoUser.name) || req.user.email,
+      email_verified: effectiveEmailVerified(ssoUser),
     };
     const audience = app.oauth_client_id || app.id;
     const mode = app.sso_mode === 'oidc' ? 'oidc' : 'bridge';
@@ -307,12 +317,16 @@ router.post('/token', express.json(), async (req, res) => {
       return res.status(400).json({ error: 'invalid_grant' });
     }
 
-    const { rows } = await pool.query('SELECT id, email, name FROM users WHERE id = $1 AND deleted_at IS NULL', [record.user_id]);
-    const user = rows[0];
+    const user = await usersDb.getForSsoToken(pool, record.user_id);
     if (!user) return res.status(400).json({ error: 'invalid_grant' });
 
     const idToken = await signSsoToken(
-      { user_id: user.id, email: user.email, name: user.name || user.email },
+      {
+        user_id: user.id,
+        email: user.email,
+        name: user.name || user.email,
+        email_verified: effectiveEmailVerified(user),
+      },
       clientId
     );
     return res.json({

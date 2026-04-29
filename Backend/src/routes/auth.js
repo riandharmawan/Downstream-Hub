@@ -15,8 +15,10 @@ const passwordPolicyDb = require('../db/passwordPolicyDb');
 const passwordHistoryDb = require('../db/passwordHistoryDb');
 const passwordResetDb = require('../db/passwordResetDb');
 const usersDb = require('../db/usersDb');
+const ssoLinkDb = require('../db/ssoLinkDb');
 const authSessionsDb = require('../db/authSessionsDb');
 const mfaDb = require('../db/mfaDb');
+const ssoLinkService = require('../services/ssoLinkService');
 const { validatePassword } = require('../lib/passwordValidation');
 const { signAccessToken } = require('../lib/authToken');
 const { authMiddleware } = require('../middleware/auth');
@@ -30,6 +32,7 @@ const SESSION_TTL_MS = Math.max(10 * 60 * 1000, parseInt(process.env.AUTH_SESSIO
 const MFA_CHALLENGE_TTL_SECONDS = Math.max(60, parseInt(process.env.MFA_CHALLENGE_TTL_SECONDS || '300', 10));
 const MFA_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.MFA_MAX_ATTEMPTS || '5', 10));
 const MFA_ENABLED = process.env.MFA_ENABLED === '1';
+const SSO_LINK_AUTO_EMAIL_VERIFY_ENABLED = process.env.SSO_LINK_AUTO_EMAIL_VERIFY_ENABLED !== '0';
 
 function setSessionCookies(res, sessionToken, csrfToken) {
   const secure = process.env.NODE_ENV === 'production';
@@ -289,6 +292,59 @@ router.post('/login', loginLimit, async (req, res) => {
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// POST /api/auth/oidc/auto-link/start
+// Entry point for future OIDC callback integration: trigger email-verified linking for a local account.
+router.post('/oidc/auto-link/start', async (req, res) => {
+  try {
+    if (!SSO_LINK_AUTO_EMAIL_VERIFY_ENABLED) {
+      return res.status(400).json({ error: 'linking_disabled' });
+    }
+    const email = ssoLinkService.normalizeEmail(req.body?.email);
+    const oidcSub = ssoLinkService.normalizeSubject(req.body?.oidc_sub);
+    if (!email || !oidcSub) return res.status(400).json({ error: 'email and oidc_sub are required' });
+    const user = await usersDb.getByEmail(pool, email);
+    if (!user) return res.status(404).json({ error: 'user_not_found' });
+    if (user.oidc_sub && user.oidc_sub === oidcSub) {
+      return res.json({ message: 'already_linked' });
+    }
+    const existing = await ssoLinkDb.getByOidcSub(pool, oidcSub);
+    if (existing && existing.id !== user.id) {
+      return res.status(409).json({ error: 'oidc_sub_already_linked' });
+    }
+    const created = await ssoLinkService.createEmailVerification(pool, {
+      actorId: null,
+      user,
+      subject: oidcSub,
+      mode: 'auto_email_verify',
+    });
+    const publicBase = (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const verifyUrl = `${publicBase}/login?sso_verify=${encodeURIComponent(created.tokenRaw)}`;
+    try {
+      await mailer.sendSsoLinkVerificationEmail({ to: user.email, verifyUrl });
+    } catch (mailErr) {
+      console.error('Auto-link verification email error:', mailErr.message);
+    }
+    return res.status(202).json({ message: 'verification_sent' });
+  } catch (err) {
+    console.error('Auto-link start error:', err);
+    return res.status(500).json({ error: 'auto_link_start_failed' });
+  }
+});
+
+// GET /api/auth/oidc/auto-link/verify?token=...
+router.get('/oidc/auto-link/verify', async (req, res) => {
+  try {
+    const token = String(req.query.token || '').trim();
+    if (!token) return res.status(400).json({ error: 'token required' });
+    const result = await ssoLinkService.consumeEmailVerificationAndLink(pool, { actorId: null, tokenRaw: token });
+    if (!result.ok) return res.status(400).json({ error: result.code });
+    return res.json({ message: 'linked' });
+  } catch (err) {
+    console.error('Auto-link verify error:', err);
+    return res.status(500).json({ error: 'auto_link_verify_failed' });
   }
 });
 

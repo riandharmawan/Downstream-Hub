@@ -109,6 +109,29 @@ async function sendOtpEmail({ to, otp, ttlSeconds }) {
   return { skipped: false };
 }
 
+/**
+ * @param {{ to: string, verifyUrl: string }} opts
+ */
+async function sendSsoLinkVerificationEmail({ to, verifyUrl }) {
+  const subject = 'Confirm SSO account linking in Downstream Hub';
+  const text = `To complete account linking, open this verification link:\n\n${verifyUrl}\n\nIf you did not request this action, ignore this email.`;
+  const html = `<p>To complete account linking, verify your email:</p><p><a href="${escapeHtml(verifyUrl)}">Confirm SSO linking</a></p><p>If you did not request this action, ignore this email.</p>`;
+  if (!smtpConfigured()) {
+    console.info('[mailer] SMTP not configured; SSO link verification URL (dev only):');
+    console.info(verifyUrl);
+    return { skipped: true };
+  }
+  const transport = createTransport();
+  await transport.sendMail({
+    from: fromAddress(),
+    to,
+    subject,
+    text,
+    html,
+  });
+  return { skipped: false };
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -121,5 +144,6 @@ module.exports = {
   sendPasswordResetEmail,
   sendPasswordChangedEmail,
   sendOtpEmail,
+  sendSsoLinkVerificationEmail,
   smtpConfigured,
 };

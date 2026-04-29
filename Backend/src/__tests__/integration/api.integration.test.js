@@ -12,6 +12,11 @@ const app = require('../../app');
 const { pool } = require('../../db/pool');
 const { runMigrations } = require('../../db/migrate');
 const passwordResetDb = require('../../db/passwordResetDb');
+const oidcDb = require('../../db/oidcDb');
+
+function toBase64Url(buf) {
+  return Buffer.from(buf).toString('base64url');
+}
 
 const hasDb = !!process.env.DATABASE_URL;
 
@@ -152,6 +157,129 @@ describe('API Integration (TEST-PLAN)', () => {
     test('GET /api/sso/bridge without ref returns 400', async () => {
       const res = await request(app).get('/api/sso/bridge');
       expect(res.status).toBe(400);
+    });
+
+    const runOidcTokenTest = hasDb ? test : test.skip;
+
+    runOidcTokenTest('POST /api/sso/token id_token has email_verified true when hub_oidc_email_verified_at is set', async () => {
+      const { rows: userRows } = await pool.query(
+        'SELECT id FROM users WHERE deleted_at IS NULL ORDER BY email LIMIT 1'
+      );
+      if (!userRows.length) return;
+      const userId = userRows[0].id;
+      await pool.query('UPDATE users SET hub_oidc_email_verified_at = now() WHERE id = $1', [userId]);
+
+      let appRow;
+      const { rows: appRows } = await pool.query(
+        `SELECT id, oauth_client_id, oidc_redirect_uris FROM applications
+         WHERE deleted_at IS NULL AND sso_mode = 'oidc' AND oauth_client_id IS NOT NULL
+         LIMIT 1`
+      );
+      if (appRows.length) {
+        appRow = appRows[0];
+      } else {
+        const cid = `test-oidc-client-${Date.now()}`;
+        const ins = await pool.query(
+          `INSERT INTO applications (name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id, oauth_client_id, oidc_redirect_uris`,
+          ['OIDC Test App', 'test', '', 'https://example.com/app', null, cid, ['https://example.com/callback'], 'oidc']
+        );
+        appRow = ins.rows[0];
+      }
+
+      const redirectUri =
+        Array.isArray(appRow.oidc_redirect_uris) && appRow.oidc_redirect_uris[0]
+          ? appRow.oidc_redirect_uris[0]
+          : 'https://example.com/callback';
+      const clientId = appRow.oauth_client_id;
+      const codeVerifier = toBase64Url(crypto.randomBytes(48));
+      const codeChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
+      const rawCode = toBase64Url(crypto.randomBytes(32));
+      const expiresAt = new Date(Date.now() + 120000);
+
+      await oidcDb.insertAuthCode(pool, {
+        rawCode,
+        userId,
+        applicationId: appRow.id,
+        clientId,
+        redirectUri,
+        scope: 'openid profile email',
+        nonce: 'n',
+        codeChallenge,
+        codeChallengeMethod: 'S256',
+        expiresAt,
+      });
+
+      const res = await request(app).post('/api/sso/token').send({
+        grant_type: 'authorization_code',
+        code: rawCode,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+        code_verifier: codeVerifier,
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.id_token).toBeTruthy();
+      const parts = res.body.id_token.split('.');
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      expect(payload.email_verified).toBe(true);
+    });
+
+    runOidcTokenTest('POST /api/sso/token id_token has email_verified false when hub_oidc_email_verified_at is null', async () => {
+      if (process.env.OIDC_EMAIL_VERIFIED_TRUST_ALL === '1') {
+        return;
+      }
+      const { rows: userRows } = await pool.query(
+        'SELECT id FROM users WHERE deleted_at IS NULL ORDER BY email LIMIT 2 OFFSET 1'
+      );
+      if (!userRows.length) return;
+      const userId = userRows[0].id;
+      await pool.query('UPDATE users SET hub_oidc_email_verified_at = NULL WHERE id = $1', [userId]);
+
+      const { rows: appRows } = await pool.query(
+        `SELECT id, oauth_client_id, oidc_redirect_uris FROM applications
+         WHERE deleted_at IS NULL AND sso_mode = 'oidc' AND oauth_client_id IS NOT NULL
+         LIMIT 1`
+      );
+      if (!appRows.length) return;
+
+      const appRow = appRows[0];
+      const redirectUri =
+        Array.isArray(appRow.oidc_redirect_uris) && appRow.oidc_redirect_uris[0]
+          ? appRow.oidc_redirect_uris[0]
+          : 'https://example.com/callback';
+      const clientId = appRow.oauth_client_id;
+      const codeVerifier = toBase64Url(crypto.randomBytes(48));
+      const codeChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
+      const rawCode = toBase64Url(crypto.randomBytes(32));
+      const expiresAt = new Date(Date.now() + 120000);
+
+      await oidcDb.insertAuthCode(pool, {
+        rawCode,
+        userId,
+        applicationId: appRow.id,
+        clientId,
+        redirectUri,
+        scope: 'openid profile email',
+        nonce: 'n',
+        codeChallenge,
+        codeChallengeMethod: 'S256',
+        expiresAt,
+      });
+
+      const res = await request(app).post('/api/sso/token').send({
+        grant_type: 'authorization_code',
+        code: rawCode,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+        code_verifier: codeVerifier,
+      });
+
+      expect(res.status).toBe(200);
+      const parts = res.body.id_token.split('.');
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      expect(payload.email_verified).toBe(false);
     });
   });
 

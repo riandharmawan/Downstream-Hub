@@ -60,6 +60,12 @@ export default function Admin() {
   const [addUserSaving, setAddUserSaving] = useState(false);
   const [userDeactivateConfirm, setUserDeactivateConfirm] = useState(null);
   const [resetPasswordResult, setResetPasswordResult] = useState(null);
+  const [ssoPrelinkResult, setSsoPrelinkResult] = useState(null);
+  const [ssoEventsUser, setSsoEventsUser] = useState(null);
+  const [ssoEvents, setSsoEvents] = useState([]);
+  const [bulkRowsText, setBulkRowsText] = useState('');
+  const [bulkDryRunRows, setBulkDryRunRows] = useState([]);
+  const [bulkJobId, setBulkJobId] = useState('');
   const [passwordExpiryDays, setPasswordExpiryDays] = useState(0);
   const [minPasswordLength, setMinPasswordLength] = useState(6);
   const [requireUppercase, setRequireUppercase] = useState(true);
@@ -400,6 +406,81 @@ export default function Admin() {
     }
   }
 
+  async function handleGenerateSsoLink(u) {
+    setError('');
+    try {
+      const data = await apiRequest(`/api/users/${u.id}/sso-link/start`, { method: 'POST' }, token);
+      setSsoPrelinkResult({ email: u.email, url: data.url, expires_at: data.expires_at });
+      await loadUsers();
+    } catch (err) {
+      setError(err.error || 'Failed to generate SSO link');
+    }
+  }
+
+  async function handleLoadSsoEvents(u) {
+    setError('');
+    try {
+      const data = await apiRequest(`/api/users/${u.id}/sso-events`, {}, token);
+      setSsoEventsUser(u);
+      setSsoEvents(data.events || []);
+    } catch (err) {
+      setError(err.error || 'Failed to load SSO events');
+    }
+  }
+
+  async function handleAdminUnlinkSso(u) {
+    setError('');
+    try {
+      await apiRequest(`/api/users/${u.id}/sso-unlink`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'admin action' }),
+      }, token);
+      await loadUsers();
+    } catch (err) {
+      setError(err.error || 'Failed to unlink SSO');
+    }
+  }
+
+  function parseBulkRows() {
+    return String(bulkRowsText || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [email, oidc_sub] = line.split(',').map((x) => String(x || '').trim());
+        return { email, oidc_sub };
+      });
+  }
+
+  async function handleBulkDryRun() {
+    setError('');
+    try {
+      const rows = parseBulkRows();
+      const data = await apiRequest('/api/users/sso-link/bulk/dry-run', {
+        method: 'POST',
+        body: JSON.stringify({ rows }),
+      }, token);
+      setBulkDryRunRows(data.rows || []);
+    } catch (err) {
+      setError(err.error || 'Bulk dry-run failed');
+    }
+  }
+
+  async function handleBulkExecute() {
+    setError('');
+    try {
+      const rows = parseBulkRows();
+      const data = await apiRequest('/api/users/sso-link/bulk/jobs', {
+        method: 'POST',
+        body: JSON.stringify({ rows }),
+      }, token);
+      setBulkJobId(data.job_id || '');
+      await loadUsers();
+    } catch (err) {
+      setError(err.error || 'Bulk execution failed');
+    }
+  }
+
   function copyPasswordToClipboard() {
     if (!resetPasswordResult?.temporary_password) return;
     navigator.clipboard.writeText(resetPasswordResult.temporary_password);
@@ -718,7 +799,8 @@ export default function Admin() {
                   <th style={styles.tableHeader}>Role</th>
                   <th style={styles.tableHeader}>Business Unit</th>
                   <th style={styles.tableHeader}>Status</th>
-                  <th style={{ ...styles.tableHeader, width: 320 }}>Actions</th>
+                  <th style={styles.tableHeader}>SSO</th>
+                  <th style={{ ...styles.tableHeader, width: 420 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -728,9 +810,15 @@ export default function Admin() {
                     <td style={styles.tableCell}>{u.role}</td>
                     <td style={styles.tableCell}>{u.business_unit_name || '—'}</td>
                     <td style={styles.tableCell}>{u.locked_until && new Date(u.locked_until) > new Date() ? 'Locked' : '—'}</td>
+                    <td style={styles.tableCell}>{u.oidc_linked ? 'Linked' : 'Not linked'}</td>
                     <td style={styles.actionsCell}>
                       <button type="button" className="btn-secondary" onClick={() => openUserBuEdit(u)}>Edit BU</button>
                       <button type="button" className="btn-secondary" onClick={() => handleResetPassword(u)}>Reset password</button>
+                      <button type="button" className="btn-secondary" onClick={() => handleGenerateSsoLink(u)}>Generate SSO link</button>
+                      <button type="button" className="btn-secondary" onClick={() => handleLoadSsoEvents(u)}>View SSO history</button>
+                      {u.oidc_linked && (
+                        <button type="button" className="btn-secondary" onClick={() => handleAdminUnlinkSso(u)}>Unlink SSO</button>
+                      )}
                       {u.locked_until && new Date(u.locked_until) > new Date() && (
                         <button type="button" className="btn-primary" onClick={() => handleUnlock(u)}>Unlock</button>
                       )}
@@ -790,6 +878,90 @@ export default function Admin() {
                 </div>
                 <div style={{ ...styles.formActions, marginTop: 'var(--space-3)' }}>
                   <button type="button" className="btn-secondary" onClick={() => setResetPasswordResult(null)}>Close</button>
+                </div>
+              </div>
+            </div>
+          )}
+          <section style={{ marginTop: 'var(--space-4)' }}>
+            <h3 style={styles.formTitle}>Bulk SSO linking</h3>
+            <p style={styles.helpText}>Paste CSV-like lines: <code>email,oidc_sub</code> (one row per line).</p>
+            <textarea
+              rows={6}
+              style={styles.textarea}
+              value={bulkRowsText}
+              onChange={(e) => setBulkRowsText(e.target.value)}
+              placeholder="alice@company.com,sub-123&#10;bob@company.com,sub-456"
+            />
+            <div style={styles.formActions}>
+              <button type="button" className="btn-secondary" onClick={handleBulkDryRun}>Dry-run</button>
+              <button type="button" className="btn-primary" onClick={handleBulkExecute}>Execute</button>
+            </div>
+            {bulkJobId && <p style={styles.helpText}>Last job ID: {bulkJobId}</p>}
+            {bulkDryRunRows.length > 0 && (
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.tableHeader}>Email</th>
+                    <th style={styles.tableHeader}>Subject</th>
+                    <th style={styles.tableHeader}>Result</th>
+                    <th style={styles.tableHeader}>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bulkDryRunRows.map((row, idx) => (
+                    <tr key={`${row.email || 'row'}-${idx}`}>
+                      <td style={styles.tableCell}>{row.email || '—'}</td>
+                      <td style={styles.tableCell}>{row.oidc_sub || '—'}</td>
+                      <td style={styles.tableCell}>{row.final_status || '—'}</td>
+                      <td style={styles.tableCell}>{row.reason_code || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+          {ssoPrelinkResult && (
+            <div style={styles.modal}>
+              <div style={styles.modalContent}>
+                <p>Prelink URL generated for <strong>{ssoPrelinkResult.email}</strong>.</p>
+                <input type="text" readOnly value={ssoPrelinkResult.url} style={{ ...styles.input, maxWidth: '100%' }} />
+                <div style={styles.formActions}>
+                  <button type="button" className="btn-primary" onClick={() => navigator.clipboard.writeText(ssoPrelinkResult.url)}>Copy link</button>
+                  <button type="button" className="btn-secondary" onClick={() => setSsoPrelinkResult(null)}>Close</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {ssoEventsUser && (
+            <div style={styles.modal}>
+              <div style={{ ...styles.modalContent, maxWidth: 700 }}>
+                <p>SSO events for <strong>{ssoEventsUser.email}</strong></p>
+                {ssoEvents.length === 0 ? <p style={styles.helpText}>No events recorded.</p> : (
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.tableHeader}>Time</th>
+                        <th style={styles.tableHeader}>Mode</th>
+                        <th style={styles.tableHeader}>Event</th>
+                        <th style={styles.tableHeader}>Status</th>
+                        <th style={styles.tableHeader}>Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ssoEvents.map((ev) => (
+                        <tr key={ev.id}>
+                          <td style={styles.tableCell}>{new Date(ev.created_at).toLocaleString()}</td>
+                          <td style={styles.tableCell}>{ev.mode}</td>
+                          <td style={styles.tableCell}>{ev.event_type}</td>
+                          <td style={styles.tableCell}>{ev.status}</td>
+                          <td style={styles.tableCell}>{ev.reason_code || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <div style={styles.formActions}>
+                  <button type="button" className="btn-secondary" onClick={() => setSsoEventsUser(null)}>Close</button>
                 </div>
               </div>
             </div>

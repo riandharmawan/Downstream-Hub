@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { apiRequest } from '../api';
 
 export default function Login() {
   const location = useLocation();
@@ -13,6 +14,24 @@ export default function Login() {
   const { login, verifyMfa } = useAuth();
   const navigate = useNavigate();
   const successMessage = location.state?.message;
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || '');
+    const token = params.get('sso_verify');
+    if (!token) return;
+    let ignore = false;
+    (async () => {
+      try {
+        const data = await apiRequest(`/api/auth/oidc/auto-link/verify?token=${encodeURIComponent(token)}`);
+        if (!ignore) setError(data.message === 'linked' ? '' : 'Failed to verify SSO link');
+      } catch (err) {
+        if (!ignore) setError(err.error || 'SSO link verification failed');
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [location.search]);
 
   async function handleSubmit(e) {
     e.preventDefault();

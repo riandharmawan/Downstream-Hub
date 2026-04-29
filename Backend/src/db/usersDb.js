@@ -6,6 +6,7 @@ async function listWithBu(db) {
   const { rows } = await db.query(
     `SELECT u.id, u.email, u.role, u.business_unit_id, u.created_at,
             u.failed_login_attempts, u.locked_until,
+            u.oidc_sub, u.oidc_linked_at, u.oidc_linked_by_mode,
             bu.name AS business_unit_name
      FROM users u
      LEFT JOIN business_units bu ON bu.id = u.business_unit_id AND bu.deleted_at IS NULL
@@ -20,10 +21,27 @@ async function listWithBu(db) {
 
 async function getById(db, id) {
   const { rows } = await db.query(
-    'SELECT id, email, role, business_unit_id, failed_login_attempts, locked_until, token_version FROM users WHERE id = $1 AND deleted_at IS NULL',
+    'SELECT id, email, role, business_unit_id, failed_login_attempts, locked_until, token_version, oidc_sub, oidc_linked_at, oidc_linked_by_mode, hub_oidc_email_verified_at FROM users WHERE id = $1 AND deleted_at IS NULL',
     [id]
   );
   return rows[0] || null;
+}
+
+/** OIDC id_token / bridge JWT: user row fields needed for claims. */
+async function getForSsoToken(db, id) {
+  const { rows } = await db.query(
+    'SELECT id, email, name, hub_oidc_email_verified_at FROM users WHERE id = $1 AND deleted_at IS NULL',
+    [id]
+  );
+  return rows[0] || null;
+}
+
+/** Set after successful SSO magic-link inbox verification (sso_link_email_verifications consumed). */
+async function setHubOidcEmailVerifiedAt(db, userId, at = new Date()) {
+  await db.query(
+    'UPDATE users SET hub_oidc_email_verified_at = $2 WHERE id = $1 AND deleted_at IS NULL',
+    [userId, at]
+  );
 }
 
 /** For /me: user with business_unit_name for display. */
@@ -133,8 +151,10 @@ async function unlockUser(db, userId) {
 module.exports = {
   listWithBu,
   getById,
+  getForSsoToken,
   getByIdWithBuName,
   getByEmail,
+  setHubOidcEmailVerifiedAt,
   countActive,
   create,
   updatePassword,

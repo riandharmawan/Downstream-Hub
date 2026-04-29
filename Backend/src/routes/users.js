@@ -7,13 +7,16 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../db/pool');
 const usersDb = require('../db/usersDb');
+const ssoLinkDb = require('../db/ssoLinkDb');
 const businessUnitsDb = require('../db/businessUnitsDb');
 const allowedDomainsDb = require('../db/allowedDomainsDb');
 const passwordPolicyDb = require('../db/passwordPolicyDb');
 const passwordHistoryDb = require('../db/passwordHistoryDb');
+const ssoLinkService = require('../services/ssoLinkService');
 const { validatePassword } = require('../lib/passwordValidation');
 const { authMiddleware, requireAdmin } = require('../middleware/auth');
 const { auditLog, getClientIp } = require('../middleware/audit');
+const mailer = require('../lib/mailer');
 
 const router = express.Router();
 
@@ -39,11 +42,330 @@ router.get('/', authMiddleware, requireAdmin, async (req, res) => {
       business_unit_name: r.business_unit_name || null,
       created_at: r.created_at,
       locked_until: r.locked_until || null,
+      oidc_linked: !!r.oidc_sub,
+      oidc_linked_at: r.oidc_linked_at || null,
+      oidc_linked_by_mode: r.oidc_linked_by_mode || null,
+      oidc_subject_fingerprint: r.oidc_sub ? ssoLinkDb.subjectFingerprint(r.oidc_sub) : null,
     }));
     res.json({ users });
   } catch (err) {
     console.error('List users error:', err);
     res.status(500).json({ error: 'Failed to list users' });
+  }
+});
+
+// GET /api/users/me/sso-status — self-service SSO link status
+router.get('/me/sso-status', authMiddleware, async (req, res) => {
+  try {
+    const status = await ssoLinkService.getUserStatus(pool, req.user.id);
+    if (!status) return res.status(404).json({ error: 'User not found' });
+    return res.json({
+      linked: status.linked,
+      authSource: status.auth_source,
+      linkedAt: status.linked_at,
+      linkedByMode: status.linked_by_mode,
+      subjectFingerprint: status.subject_fingerprint,
+    });
+  } catch (err) {
+    console.error('Get SSO status error:', err);
+    return res.status(500).json({ error: 'Failed to load SSO status' });
+  }
+});
+
+// POST /api/users/me/sso-connect/start — sends verification link for self-service connect
+router.post('/me/sso-connect/start', authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const me = await usersDb.getById(client, req.user.id);
+    if (!me) return res.status(404).json({ error: 'User not found' });
+    const subject = ssoLinkService.buildSyntheticSubjectForUser(me);
+    const result = await ssoLinkService.createEmailVerification(client, {
+      user: me,
+      mode: 'connect_sso',
+      subject,
+      actorId: req.user.id,
+    });
+    const publicBase = (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const verifyUrl = `${publicBase}/change-password?sso_verify=${encodeURIComponent(result.tokenRaw)}`;
+    try {
+      await mailer.sendSsoLinkVerificationEmail({ to: me.email, verifyUrl });
+    } catch (mailErr) {
+      console.error('SSO connect email send failed:', mailErr.message);
+    }
+    return res.json({
+      message: 'Verification email sent',
+      expires_at: result.expiresAt,
+    });
+  } catch (err) {
+    console.error('Start SSO connect error:', err);
+    return res.status(500).json({ error: 'Failed to start SSO connect' });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/users/me/sso-unlink — self unlink
+router.post('/me/sso-unlink', authMiddleware, async (req, res) => {
+  try {
+    const row = await ssoLinkDb.unlinkOidcSubFromUser(pool, { userId: req.user.id });
+    if (!row) return res.status(404).json({ error: 'User not found' });
+    await ssoLinkDb.insertLinkEvent(pool, {
+      userId: req.user.id,
+      actorId: req.user.id,
+      mode: 'self_service',
+      eventType: 'unlink',
+      status: 'success',
+    });
+    return res.json({ message: 'SSO unlinked' });
+  } catch (err) {
+    console.error('Unlink SSO error:', err);
+    return res.status(500).json({ error: 'Failed to unlink SSO' });
+  }
+});
+
+// GET /api/users/sso/verify?token=... — consumes verification token and links account
+router.get('/sso/verify', authMiddleware, async (req, res) => {
+  try {
+    const token = String(req.query.token || '').trim();
+    if (!token) return res.status(400).json({ error: 'token required' });
+    const result = await ssoLinkService.consumeEmailVerificationAndLink(pool, {
+      actorId: req.user.id,
+      tokenRaw: token,
+    });
+    if (!result.ok) return res.status(400).json({ error: result.code });
+    return res.json({ message: 'SSO linked successfully' });
+  } catch (err) {
+    console.error('Verify SSO link error:', err);
+    return res.status(500).json({ error: 'Failed to verify link' });
+  }
+});
+
+// GET /api/users/:id/sso-status — admin status lookup
+router.get('/:id/sso-status', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const status = await ssoLinkService.getUserStatus(pool, req.params.id);
+    if (!status) return res.status(404).json({ error: 'User not found' });
+    return res.json({
+      linked: status.linked,
+      authSource: status.auth_source,
+      linkedAt: status.linked_at,
+      linkedByMode: status.linked_by_mode,
+      subjectFingerprint: status.subject_fingerprint,
+    });
+  } catch (err) {
+    console.error('Admin get SSO status error:', err);
+    return res.status(500).json({ error: 'Failed to load SSO status' });
+  }
+});
+
+// GET /api/users/:id/sso-events — admin history
+router.get('/:id/sso-events', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const events = await ssoLinkDb.listLinkEventsByUser(pool, req.params.id, 50);
+    return res.json({ events });
+  } catch (err) {
+    console.error('Admin get SSO events error:', err);
+    return res.status(500).json({ error: 'Failed to load SSO events' });
+  }
+});
+
+// POST /api/users/:id/sso-link/start — admin prelink URL
+router.post('/:id/sso-link/start', authMiddleware, requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const target = await usersDb.getById(client, req.params.id);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    const subject = ssoLinkService.buildSyntheticSubjectForUser(target);
+    const result = await ssoLinkService.createEmailVerification(client, {
+      user: target,
+      mode: 'admin_prelink',
+      subject,
+      actorId: req.user.id,
+    });
+    const publicBase = (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const url = `${publicBase}/change-password?sso_verify=${encodeURIComponent(result.tokenRaw)}`;
+    await ssoLinkDb.insertLinkEvent(client, {
+      userId: target.id,
+      actorId: req.user.id,
+      mode: 'admin_prelink',
+      eventType: 'prelink_generated',
+      status: 'success',
+    });
+    return res.json({ url, expires_at: result.expiresAt });
+  } catch (err) {
+    console.error('Admin prelink start error:', err);
+    return res.status(500).json({ error: 'Failed to generate prelink URL' });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/users/:id/sso-unlink — admin unlink
+router.post('/:id/sso-unlink', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const row = await ssoLinkDb.unlinkOidcSubFromUser(pool, { userId: req.params.id });
+    if (!row) return res.status(404).json({ error: 'User not found' });
+    await ssoLinkDb.insertLinkEvent(pool, {
+      userId: req.params.id,
+      actorId: req.user.id,
+      mode: 'admin',
+      eventType: 'unlink',
+      status: 'success',
+      reasonCode: req.body?.reason ? 'admin_reason_provided' : null,
+      metadata: { reason: String(req.body?.reason || '').trim() || null },
+    });
+    return res.json({ message: 'SSO unlinked' });
+  } catch (err) {
+    console.error('Admin unlink SSO error:', err);
+    return res.status(500).json({ error: 'Failed to unlink SSO' });
+  }
+});
+
+// POST /api/users/sso-link/bulk/dry-run
+router.post('/sso-link/bulk/dry-run', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const output = [];
+    for (const row of rows) {
+      const email = String(row?.email || '').trim().toLowerCase();
+      const oidcSub = String(row?.oidc_sub || '').trim();
+      if (!email || !oidcSub) {
+        output.push({ email, oidc_sub: oidcSub, final_status: 'blocked_email_mismatch', reason_code: 'missing_required_fields' });
+        continue;
+      }
+      const user = await usersDb.getByEmail(pool, email);
+      if (!user) {
+        output.push({ email, oidc_sub: oidcSub, final_status: 'blocked_email_mismatch', reason_code: 'user_not_found' });
+        continue;
+      }
+      const existing = await ssoLinkDb.getByOidcSub(pool, oidcSub);
+      if (existing && existing.id !== user.id) {
+        output.push({ user_id: user.id, email, oidc_sub: oidcSub, final_status: 'blocked_collision', reason_code: 'oidc_sub_already_linked' });
+        continue;
+      }
+      output.push({ user_id: user.id, email, oidc_sub: oidcSub, final_status: user.oidc_sub ? 'skipped_already_linked' : 'linked', reason_code: null });
+    }
+    return res.json({ rows: output });
+  } catch (err) {
+    console.error('Bulk dry-run error:', err);
+    return res.status(500).json({ error: 'Bulk dry-run failed' });
+  }
+});
+
+// POST /api/users/sso-link/bulk/jobs
+router.post('/sso-link/bulk/jobs', authMiddleware, requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const job = await ssoLinkDb.createBulkJob(client, {
+      createdBy: req.user.id,
+      sourceType: 'csv',
+      totalRows: rows.length,
+    });
+    const items = [];
+    let linkedRows = 0;
+    let blockedRows = 0;
+    let failedRows = 0;
+    for (const row of rows) {
+      const email = String(row?.email || '').trim().toLowerCase();
+      const oidcSub = String(row?.oidc_sub || '').trim();
+      if (!email || !oidcSub) {
+        blockedRows += 1;
+        items.push({ email, oidc_sub: oidcSub, match_status: 'blocked', final_status: 'blocked_email_mismatch', reason_code: 'missing_required_fields' });
+        continue;
+      }
+      const user = await usersDb.getByEmail(client, email);
+      if (!user) {
+        blockedRows += 1;
+        items.push({ email, oidc_sub: oidcSub, match_status: 'blocked', final_status: 'blocked_email_mismatch', reason_code: 'user_not_found' });
+        continue;
+      }
+      const result = await ssoLinkService.linkUserSubject(client, { actorId: req.user.id, user, subject: oidcSub, mode: 'bulk' });
+      if (!result.ok) {
+        blockedRows += 1;
+        items.push({ user_id: user.id, email, oidc_sub: oidcSub, match_status: 'blocked', final_status: 'blocked_collision', reason_code: result.code, attempt_count: 1, last_attempt_at: new Date() });
+      } else {
+        linkedRows += 1;
+        items.push({ user_id: user.id, email, oidc_sub: oidcSub, match_status: 'ready', final_status: 'linked', reason_code: null, attempt_count: 1, last_attempt_at: new Date() });
+      }
+    }
+    await ssoLinkDb.insertBulkItems(client, job.id, items);
+    await ssoLinkDb.updateBulkJobCounters(client, {
+      jobId: job.id,
+      status: failedRows > 0 ? 'failed' : 'completed',
+      readyRows: linkedRows,
+      linkedRows,
+      blockedRows,
+      failedRows,
+      started: true,
+      finished: true,
+    });
+    return res.status(201).json({ job_id: job.id });
+  } catch (err) {
+    console.error('Bulk job create error:', err);
+    return res.status(500).json({ error: 'Failed to execute bulk job' });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/users/sso-link/bulk/jobs/:jobId
+router.get('/sso-link/bulk/jobs/:jobId', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const job = await ssoLinkDb.getBulkJob(pool, req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    return res.json({ job });
+  } catch (err) {
+    console.error('Get bulk job error:', err);
+    return res.status(500).json({ error: 'Failed to load job' });
+  }
+});
+
+// GET /api/users/sso-link/bulk/jobs/:jobId/items
+router.get('/sso-link/bulk/jobs/:jobId/items', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const rows = await ssoLinkDb.listBulkItems(pool, req.params.jobId);
+    return res.json({ rows });
+  } catch (err) {
+    console.error('Get bulk job items error:', err);
+    return res.status(500).json({ error: 'Failed to load job items' });
+  }
+});
+
+// POST /api/users/sso-link/bulk/jobs/:jobId/retry
+router.post('/sso-link/bulk/jobs/:jobId/retry', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const items = await ssoLinkDb.listBulkItems(pool, req.params.jobId);
+    const retryable = items.filter((x) => x.final_status === 'failed_retryable');
+    return res.json({ retried: retryable.length, message: 'Retry queue evaluated (manual retry flow pending for non-retryable statuses).' });
+  } catch (err) {
+    console.error('Retry bulk job error:', err);
+    return res.status(500).json({ error: 'Failed to retry job' });
+  }
+});
+
+// GET /api/users/sso-link/bulk/jobs/:jobId/export.csv
+router.get('/sso-link/bulk/jobs/:jobId/export.csv', authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const items = await ssoLinkDb.listBulkItems(pool, req.params.jobId);
+    const lines = [
+      'email,oidc_sub,final_status,reason_code,reason_detail',
+      ...items.map((x) =>
+        [
+          JSON.stringify(x.email || ''),
+          JSON.stringify(x.oidc_sub || ''),
+          JSON.stringify(x.final_status || ''),
+          JSON.stringify(x.reason_code || ''),
+          JSON.stringify(x.reason_detail || ''),
+        ].join(',')
+      ),
+    ];
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="sso-link-job-${req.params.jobId}.csv"`);
+    return res.send(lines.join('\n'));
+  } catch (err) {
+    console.error('Export bulk job CSV error:', err);
+    return res.status(500).json({ error: 'Failed to export CSV' });
   }
 });
 

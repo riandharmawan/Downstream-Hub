@@ -1,16 +1,76 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
 
 export default function ChangePassword() {
   const { user, token, logout } = useAuth();
+  const [searchParams] = useSearchParams();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newPasswordRetype, setNewPasswordRetype] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [ssoStatus, setSsoStatus] = useState({ loading: true, linked: false, subjectFingerprint: null });
+  const [ssoMessage, setSsoMessage] = useState('');
+  const [ssoError, setSsoError] = useState('');
+  const [ssoSubmitting, setSsoSubmitting] = useState(false);
+
+  useEffect(() => {
+    let ignore = false;
+    async function loadStatus() {
+      try {
+        const data = await apiRequest('/api/users/me/sso-status', {}, token);
+        if (!ignore) {
+          setSsoStatus({
+            loading: false,
+            linked: !!data.linked,
+            subjectFingerprint: data.subjectFingerprint || null,
+            linkedAt: data.linkedAt || null,
+            linkedByMode: data.linkedByMode || null,
+          });
+        }
+      } catch {
+        if (!ignore) setSsoStatus({ loading: false, linked: false, subjectFingerprint: null });
+      }
+    }
+    loadStatus();
+    return () => {
+      ignore = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    const verifyToken = searchParams.get('sso_verify');
+    if (!verifyToken) return;
+    let ignore = false;
+    (async () => {
+      setSsoSubmitting(true);
+      setSsoError('');
+      try {
+        await apiRequest(`/api/users/sso/verify?token=${encodeURIComponent(verifyToken)}`, {}, token);
+        if (!ignore) {
+          setSsoMessage('SSO linked successfully. You can sign in with either password or SSO.');
+          const data = await apiRequest('/api/users/me/sso-status', {}, token);
+          setSsoStatus({
+            loading: false,
+            linked: !!data.linked,
+            subjectFingerprint: data.subjectFingerprint || null,
+            linkedAt: data.linkedAt || null,
+            linkedByMode: data.linkedByMode || null,
+          });
+        }
+      } catch (err) {
+        if (!ignore) setSsoError(err.error || 'Failed to verify SSO link');
+      } finally {
+        if (!ignore) setSsoSubmitting(false);
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [searchParams, token]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -45,11 +105,67 @@ export default function ChangePassword() {
     }
   }
 
+  async function handleStartSsoConnect() {
+    setSsoSubmitting(true);
+    setSsoError('');
+    setSsoMessage('');
+    try {
+      const data = await apiRequest('/api/users/me/sso-connect/start', { method: 'POST' }, token);
+      setSsoMessage(data.message || 'Verification email sent. Please open the link in your inbox.');
+    } catch (err) {
+      setSsoError(err.error || 'Failed to start SSO connect');
+    } finally {
+      setSsoSubmitting(false);
+    }
+  }
+
+  async function handleUnlinkSso() {
+    setSsoSubmitting(true);
+    setSsoError('');
+    setSsoMessage('');
+    try {
+      await apiRequest('/api/users/me/sso-unlink', { method: 'POST' }, token);
+      setSsoStatus((s) => ({ ...s, linked: false, subjectFingerprint: null, linkedAt: null, linkedByMode: null }));
+      setSsoMessage('SSO unlinked for this account.');
+    } catch (err) {
+      setSsoError(err.error || 'Failed to unlink SSO');
+    } finally {
+      setSsoSubmitting(false);
+    }
+  }
+
   return (
     <div style={styles.page}>
       <div style={styles.card}>
         <h1 style={styles.title}>Change password</h1>
         <p style={styles.subtitle}>Signed in as {user?.email}</p>
+        <section style={styles.ssoCard}>
+          <h2 style={styles.ssoTitle}>Sign-in methods</h2>
+          <p style={styles.ssoDesc}>Manage seamless linking between local password login and OIDC SSO.</p>
+          {ssoError && <div style={styles.error}>{ssoError}</div>}
+          {ssoMessage && <div style={styles.success}>{ssoMessage}</div>}
+          {ssoStatus.loading ? (
+            <p style={styles.meta}>Loading SSO status…</p>
+          ) : (
+            <>
+              <p style={styles.meta}>
+                Status: <strong>{ssoStatus.linked ? 'Linked' : 'Not linked'}</strong>
+                {ssoStatus.subjectFingerprint ? ` (${ssoStatus.subjectFingerprint})` : ''}
+              </p>
+              <div style={styles.ssoActions}>
+                <button type="button" disabled={ssoSubmitting} className="btn-secondary" onClick={handleStartSsoConnect}>
+                  {ssoSubmitting ? 'Working…' : 'Connect SSO'}
+                </button>
+                {ssoStatus.linked && (
+                  <button type="button" disabled={ssoSubmitting} className="btn-secondary" onClick={handleUnlinkSso}>
+                    Unlink SSO
+                  </button>
+                )}
+              </div>
+              <p style={styles.meta}>Connect SSO sends a verification email before linking.</p>
+            </>
+          )}
+        </section>
         {success ? (
           <p style={styles.success}>Password updated successfully.</p>
         ) : (
@@ -102,6 +218,11 @@ const styles = {
   card: { background: 'var(--color-bg-white)', padding: 'var(--space-5)', borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-md)', maxWidth: 360, width: '100%' },
   title: { margin: '0 0 var(--space-1)', fontSize: 'var(--text-h3)', fontFamily: 'var(--font-heading)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
   subtitle: { margin: '0 0 var(--space-4)', color: 'var(--color-text-steel)', fontSize: 'var(--text-small)' },
+  ssoCard: { marginBottom: 'var(--space-4)', border: '1px solid var(--color-border-light)', borderRadius: 'var(--radius-md)', padding: 'var(--space-3)', background: 'var(--color-bg-light)' },
+  ssoTitle: { margin: '0 0 var(--space-1)', fontSize: 'var(--text-base)' },
+  ssoDesc: { margin: '0 0 var(--space-2)', color: 'var(--color-text-steel)', fontSize: 'var(--text-small)' },
+  meta: { margin: '0 0 var(--space-2)', fontSize: 'var(--text-small)', color: 'var(--color-text-steel)' },
+  ssoActions: { display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' },
   form: { display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' },
   error: { padding: 'var(--space-2)', background: '#FEE2E2', color: 'var(--color-destructive)', borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-small)' },
   success: { padding: 'var(--space-2)', background: '#D1FAE5', color: 'var(--color-text-charcoal)', borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-small)' },
