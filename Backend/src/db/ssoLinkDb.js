@@ -92,13 +92,13 @@ async function listLinkEventsByUser(db, userId, limit = 25) {
   return rows;
 }
 
-async function createEmailVerification(db, { userId, actorId = null, mode, oidcSub, email, tokenHash, expiresAt }) {
+async function createEmailVerification(db, { userId, actorId = null, mode, oidcSub, email, tokenHash, expiresAt, applicationId = null }) {
   const { rows } = await db.query(
     `INSERT INTO sso_link_email_verifications
-      (user_id, actor_id, mode, oidc_sub, email, token_hash, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, user_id, mode, oidc_sub, email, expires_at`,
-    [userId, actorId, mode, oidcSub, email, tokenHash, expiresAt]
+      (user_id, actor_id, mode, oidc_sub, email, token_hash, expires_at, application_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, user_id, mode, oidc_sub, email, expires_at, application_id`,
+    [userId, actorId, mode, oidcSub, email, tokenHash, expiresAt, applicationId || null]
   );
   return rows[0] || null;
 }
@@ -108,7 +108,7 @@ async function consumeEmailVerification(db, tokenHash) {
     `UPDATE sso_link_email_verifications
      SET consumed_at = now()
      WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()
-     RETURNING id, user_id, actor_id, mode, oidc_sub, email`,
+     RETURNING id, user_id, actor_id, mode, oidc_sub, email, application_id`,
     [tokenHash]
   );
   return rows[0] || null;

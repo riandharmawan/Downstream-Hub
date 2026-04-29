@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
 
 export default function ChangePassword() {
   const { user, token, logout } = useAuth();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newPasswordRetype, setNewPasswordRetype] = useState('');
@@ -16,6 +17,16 @@ export default function ChangePassword() {
   const [ssoMessage, setSsoMessage] = useState('');
   const [ssoError, setSsoError] = useState('');
   const [ssoSubmitting, setSsoSubmitting] = useState(false);
+
+  useEffect(() => {
+    const v = searchParams.get('sso_verify');
+    if (!v) return;
+    const app = searchParams.get('application_id');
+    const q = new URLSearchParams();
+    q.set('sso_verify', v);
+    if (app) q.set('application_id', app);
+    navigate(`/?${q.toString()}`, { replace: true });
+  }, [searchParams, navigate]);
 
   useEffect(() => {
     let ignore = false;
@@ -40,37 +51,6 @@ export default function ChangePassword() {
       ignore = true;
     };
   }, [token]);
-
-  useEffect(() => {
-    const verifyToken = searchParams.get('sso_verify');
-    if (!verifyToken) return;
-    let ignore = false;
-    (async () => {
-      setSsoSubmitting(true);
-      setSsoError('');
-      try {
-        await apiRequest(`/api/users/sso/verify?token=${encodeURIComponent(verifyToken)}`, {}, token);
-        if (!ignore) {
-          setSsoMessage('SSO linked successfully. You can sign in with either password or SSO.');
-          const data = await apiRequest('/api/users/me/sso-status', {}, token);
-          setSsoStatus({
-            loading: false,
-            linked: !!data.linked,
-            subjectFingerprint: data.subjectFingerprint || null,
-            linkedAt: data.linkedAt || null,
-            linkedByMode: data.linkedByMode || null,
-          });
-        }
-      } catch (err) {
-        if (!ignore) setSsoError(err.error || 'Failed to verify SSO link');
-      } finally {
-        if (!ignore) setSsoSubmitting(false);
-      }
-    })();
-    return () => {
-      ignore = true;
-    };
-  }, [searchParams, token]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -105,20 +85,6 @@ export default function ChangePassword() {
     }
   }
 
-  async function handleStartSsoConnect() {
-    setSsoSubmitting(true);
-    setSsoError('');
-    setSsoMessage('');
-    try {
-      const data = await apiRequest('/api/users/me/sso-connect/start', { method: 'POST' }, token);
-      setSsoMessage(data.message || 'Verification email sent. Please open the link in your inbox.');
-    } catch (err) {
-      setSsoError(err.error || 'Failed to start SSO connect');
-    } finally {
-      setSsoSubmitting(false);
-    }
-  }
-
   async function handleUnlinkSso() {
     setSsoSubmitting(true);
     setSsoError('');
@@ -141,7 +107,10 @@ export default function ChangePassword() {
         <p style={styles.subtitle}>Signed in as {user?.email}</p>
         <section style={styles.ssoCard}>
           <h2 style={styles.ssoTitle}>Sign-in methods</h2>
-          <p style={styles.ssoDesc}>Manage seamless linking between local password login and OIDC SSO.</p>
+          <p style={styles.ssoDesc}>
+            One password for your Hub account. Per-application OIDC email verification is managed on the{' '}
+            <Link to="/">Dashboard</Link>.
+          </p>
           {ssoError && <div style={styles.error}>{ssoError}</div>}
           {ssoMessage && <div style={styles.success}>{ssoMessage}</div>}
           {ssoStatus.loading ? (
@@ -149,20 +118,16 @@ export default function ChangePassword() {
           ) : (
             <>
               <p style={styles.meta}>
-                Status: <strong>{ssoStatus.linked ? 'Linked' : 'Not linked'}</strong>
+                Hub SSO link: <strong>{ssoStatus.linked ? 'Linked' : 'Not linked'}</strong>
                 {ssoStatus.subjectFingerprint ? ` (${ssoStatus.subjectFingerprint})` : ''}
               </p>
               <div style={styles.ssoActions}>
-                <button type="button" disabled={ssoSubmitting} className="btn-secondary" onClick={handleStartSsoConnect}>
-                  {ssoSubmitting ? 'Working…' : 'Connect SSO'}
-                </button>
                 {ssoStatus.linked && (
                   <button type="button" disabled={ssoSubmitting} className="btn-secondary" onClick={handleUnlinkSso}>
-                    Unlink SSO
+                    Unlink Hub SSO
                   </button>
                 )}
               </div>
-              <p style={styles.meta}>Connect SSO sends a verification email before linking.</p>
             </>
           )}
         </section>

@@ -19,6 +19,7 @@ const ssoLinkDb = require('../db/ssoLinkDb');
 const authSessionsDb = require('../db/authSessionsDb');
 const mfaDb = require('../db/mfaDb');
 const ssoLinkService = require('../services/ssoLinkService');
+const applicationsDb = require('../db/applicationsDb');
 const { validatePassword } = require('../lib/passwordValidation');
 const { signAccessToken } = require('../lib/authToken');
 const { authMiddleware } = require('../middleware/auth');
@@ -304,7 +305,14 @@ router.post('/oidc/auto-link/start', async (req, res) => {
     }
     const email = ssoLinkService.normalizeEmail(req.body?.email);
     const oidcSub = ssoLinkService.normalizeSubject(req.body?.oidc_sub);
+    const applicationId = String(req.body?.application_id || '').trim();
     if (!email || !oidcSub) return res.status(400).json({ error: 'email and oidc_sub are required' });
+    if (!applicationId) return res.status(400).json({ error: 'application_id required' });
+    const app = await applicationsDb.getById(pool, applicationId);
+    if (!app) return res.status(404).json({ error: 'application_not_found' });
+    if (app.sso_mode !== 'oidc') {
+      return res.status(400).json({ error: 'application_must_be_oidc' });
+    }
     const user = await usersDb.getByEmail(pool, email);
     if (!user) return res.status(404).json({ error: 'user_not_found' });
     if (user.oidc_sub && user.oidc_sub === oidcSub) {
@@ -319,9 +327,13 @@ router.post('/oidc/auto-link/start', async (req, res) => {
       user,
       subject: oidcSub,
       mode: 'auto_email_verify',
+      applicationId,
     });
+    if (!created.ok) {
+      return res.status(400).json({ error: created.code || 'verification_create_failed' });
+    }
     const publicBase = (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
-    const verifyUrl = `${publicBase}/login?sso_verify=${encodeURIComponent(created.tokenRaw)}`;
+    const verifyUrl = `${publicBase}/login?application_id=${encodeURIComponent(applicationId)}&sso_verify=${encodeURIComponent(created.tokenRaw)}`;
     try {
       await mailer.sendSsoLinkVerificationEmail({ to: user.email, verifyUrl });
     } catch (mailErr) {
@@ -339,7 +351,12 @@ router.get('/oidc/auto-link/verify', async (req, res) => {
   try {
     const token = String(req.query.token || '').trim();
     if (!token) return res.status(400).json({ error: 'token required' });
-    const result = await ssoLinkService.consumeEmailVerificationAndLink(pool, { actorId: null, tokenRaw: token });
+    const applicationId = String(req.query.application_id || '').trim() || null;
+    const result = await ssoLinkService.consumeEmailVerificationAndLink(pool, {
+      actorId: null,
+      tokenRaw: token,
+      applicationIdFromClient: applicationId,
+    });
     if (!result.ok) return res.status(400).json({ error: result.code });
     return res.json({ message: 'linked' });
   } catch (err) {

@@ -43,7 +43,7 @@ Validate `id_token` with JWKS and enforce:
 - `aud` equals your app client id
 - `exp` not expired
 - `sub` present (primary identity key)
-- **`email_verified` (boolean):** if your app implements **SSO v2 silent linking** (see §4), require `email_verified === true` before you auto-bind `sub` to an existing local user by email or before JIT-creating a user from the token. If `email_verified` is `false`, treat the user as not yet cleared for that policy (user may still need to complete Hub magic-link verification).
+- **`email_verified` (boolean):** if your app implements **SSO v2 silent linking** (see §4), require `email_verified === true` before you auto-bind `sub` to an existing local user by email or before JIT-creating a user from the token. The claim is **scoped to your OAuth client** (registered Hub application): completing verification for another Hub app does not set `email_verified` to `true` for yours. If `email_verified` is `false`, treat the user as not yet cleared for that policy (user may still need to complete Hub magic-link verification for **this** app).
 
 Recommended claim usage:
 
@@ -66,18 +66,19 @@ This section is the **developer contract** for the “SSO v2” model: the Hub p
 | `sub` | **Hub user id** (UUID). Use this as the stable primary key for the same person across launches. |
 | `email` | Primary email on the Hub account. |
 | `name` | Display name (may mirror email). |
-| `email_verified` | **`true`** only after the user has completed the Hub’s **out-of-band email verification** for SSO (magic link). The Hub sets this when a one-time verification email is consumed (see flows below). **`false`** means the Hub has not recorded that inbox proof yet. |
+| `email_verified` | **`true`** only after the user has completed the Hub’s **out-of-band email verification** for SSO **for this registered application** (magic link scoped to that app’s `aud` / client id). The Hub sets it when a one-time verification for that app is consumed (see flows below). **`false`** means the Hub has not recorded inbox proof **for launches to this OAuth client** yet (even if the user verified for a different Hub app). |
 
 **Not the same as registration domain policy:** the Hub may restrict **registration** to certain email domains (`allowed_domains`). That is separate from `email_verified`, which asserts **inbox ownership** via magic link, not only “domain looks corporate.”
 
 ### When `email_verified` becomes `true` (Hub-side)
 
-Typical Hub flows that set the underlying Hub flag (and therefore `email_verified: true` on the next `id_token`):
+Typical Hub flows that set **per-application** verification (and therefore `email_verified: true` on the **`id_token` for that app’s client id**):
 
-- User completes a **magic link** from **Connect SSO** / **Change password** linking flow: e.g. `GET /api/users/sso/verify?token=...`
-- **Auto-link** verification: `POST /api/auth/oidc/auto-link/start` then `GET /api/auth/oidc/auto-link/verify?token=...`
+- User completes a **magic link** for a chosen OIDC app: self-service uses `POST /api/users/me/sso-connect/start` with `{ "application_id": "..." }`; the link lands on the **Dashboard** (`/?application_id=...&sso_verify=...`) and is completed via `GET /api/users/sso/verify?token=...&application_id=...`.
+- **Admin prelink:** `POST /api/users/:id/sso-link/start` with `{ "application_id": "..." }` (same landing URL shape).
+- **Auto-link:** `POST /api/auth/oidc/auto-link/start` with **`application_id`** in the body, then `GET /api/auth/oidc/auto-link/verify?token=...&application_id=...`.
 
-Users who **already** had Hub-side OIDC linking completed before this feature may be **backfilled** so their first `id_token` already shows `email_verified: true`.
+Users who **already** had a global Hub OIDC verification timestamp before per-app storage may receive a **one-time DB backfill** (migration) that copies that into rows for **each** active OIDC application, so existing users are not blocked everywhere. New users verify **per app** as above.
 
 ### Downstream algorithm (silent upsert — implement in **your** app)
 
@@ -103,7 +104,7 @@ The Hub APIs under **§11** (e.g. connect SSO, admin bulk link) manage **`users.
 
 ### Optional Hub environment variable (non-production)
 
-For local/staging convenience only, operators may set `OIDC_EMAIL_VERIFIED_TRUST_ALL=1` so the Hub emits `email_verified: true` without the database flag. **Do not use in production.**
+For local/staging convenience only, operators may set `OIDC_EMAIL_VERIFIED_TRUST_ALL=1` so the Hub emits `email_verified: true` for **every** OAuth client without checking per-app verification rows. **Do not use in production.**
 
 ---
 

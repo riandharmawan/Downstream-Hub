@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const ssoLinkDb = require('../db/ssoLinkDb');
 const usersDb = require('../db/usersDb');
+const userApplicationSsoDb = require('../db/userApplicationSsoDb');
 
 const EMAIL_VERIFY_TTL_MINUTES = Math.max(5, Math.min(60, parseInt(process.env.SSO_LINK_EMAIL_VERIFY_TTL_MINUTES || '15', 10)));
 
@@ -50,9 +51,10 @@ async function linkUserSubject(db, { actorId, user, subject, mode }) {
   return { ok: true, linked };
 }
 
-async function createEmailVerification(db, { actorId = null, user, subject, mode }) {
+async function createEmailVerification(db, { actorId = null, user, subject, mode, applicationId }) {
   const normalizedSub = normalizeSubject(subject);
   if (!normalizedSub) return { ok: false, code: 'missing_subject' };
+  if (!applicationId) return { ok: false, code: 'application_id_required' };
   const tokenRaw = crypto.randomBytes(32).toString('base64url');
   const tokenHash = crypto.createHash('sha256').update(tokenRaw, 'utf8').digest('hex');
   const expiresAt = new Date(Date.now() + EMAIL_VERIFY_TTL_MINUTES * 60 * 1000);
@@ -64,6 +66,7 @@ async function createEmailVerification(db, { actorId = null, user, subject, mode
     email: normalizeEmail(user.email),
     tokenHash,
     expiresAt,
+    applicationId,
   });
   await ssoLinkDb.insertLinkEvent(db, {
     userId: user.id,
@@ -72,15 +75,26 @@ async function createEmailVerification(db, { actorId = null, user, subject, mode
     eventType: 'verification_sent',
     status: 'success',
     subjectFingerprint: ssoLinkDb.subjectFingerprint(normalizedSub),
+    metadata: { application_id: applicationId },
   });
   return { ok: true, tokenRaw, expiresAt };
 }
 
-async function consumeEmailVerificationAndLink(db, { actorId, tokenRaw }) {
+async function consumeEmailVerificationAndLink(db, { actorId, tokenRaw, applicationIdFromClient = null }) {
   const tokenHash = crypto.createHash('sha256').update(String(tokenRaw || ''), 'utf8').digest('hex');
   const verification = await ssoLinkDb.consumeEmailVerification(db, tokenHash);
   if (!verification) return { ok: false, code: 'link_token_expired' };
-  await usersDb.setHubOidcEmailVerifiedAt(db, verification.user_id);
+  if (verification.application_id) {
+    if (!applicationIdFromClient || String(applicationIdFromClient) !== String(verification.application_id)) {
+      return { ok: false, code: 'application_id_mismatch' };
+    }
+    await userApplicationSsoDb.upsertVerified(db, {
+      userId: verification.user_id,
+      applicationId: verification.application_id,
+    });
+  } else {
+    await usersDb.setHubOidcEmailVerifiedAt(db, verification.user_id);
+  }
   const status = await ssoLinkDb.getUserSsoStatus(db, verification.user_id);
   if (!status) return { ok: false, code: 'user_not_found' };
   const user = { id: status.user_id, email: status.email };

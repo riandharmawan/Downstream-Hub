@@ -161,13 +161,12 @@ describe('API Integration (TEST-PLAN)', () => {
 
     const runOidcTokenTest = hasDb ? test : test.skip;
 
-    runOidcTokenTest('POST /api/sso/token id_token has email_verified true when hub_oidc_email_verified_at is set', async () => {
+    runOidcTokenTest('POST /api/sso/token id_token has email_verified true when per-app verification row exists', async () => {
       const { rows: userRows } = await pool.query(
         'SELECT id FROM users WHERE deleted_at IS NULL ORDER BY email LIMIT 1'
       );
       if (!userRows.length) return;
       const userId = userRows[0].id;
-      await pool.query('UPDATE users SET hub_oidc_email_verified_at = now() WHERE id = $1', [userId]);
 
       let appRow;
       const { rows: appRows } = await pool.query(
@@ -187,6 +186,13 @@ describe('API Integration (TEST-PLAN)', () => {
         );
         appRow = ins.rows[0];
       }
+
+      await pool.query(
+        `INSERT INTO user_application_oidc_email_verified (user_id, application_id)
+         VALUES ($1, $2)
+         ON CONFLICT (user_id, application_id) DO UPDATE SET verified_at = excluded.verified_at`,
+        [userId, appRow.id]
+      );
 
       const redirectUri =
         Array.isArray(appRow.oidc_redirect_uris) && appRow.oidc_redirect_uris[0]
@@ -226,7 +232,7 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(payload.email_verified).toBe(true);
     });
 
-    runOidcTokenTest('POST /api/sso/token id_token has email_verified false when hub_oidc_email_verified_at is null', async () => {
+    runOidcTokenTest('POST /api/sso/token id_token has email_verified false without per-app row (global hub flag ignored)', async () => {
       if (process.env.OIDC_EMAIL_VERIFIED_TRUST_ALL === '1') {
         return;
       }
@@ -235,7 +241,6 @@ describe('API Integration (TEST-PLAN)', () => {
       );
       if (!userRows.length) return;
       const userId = userRows[0].id;
-      await pool.query('UPDATE users SET hub_oidc_email_verified_at = NULL WHERE id = $1', [userId]);
 
       const { rows: appRows } = await pool.query(
         `SELECT id, oauth_client_id, oidc_redirect_uris FROM applications
@@ -245,6 +250,12 @@ describe('API Integration (TEST-PLAN)', () => {
       if (!appRows.length) return;
 
       const appRow = appRows[0];
+      await pool.query(
+        'DELETE FROM user_application_oidc_email_verified WHERE user_id = $1 AND application_id = $2',
+        [userId, appRow.id]
+      );
+      await pool.query('UPDATE users SET hub_oidc_email_verified_at = now() WHERE id = $1', [userId]);
+
       const redirectUri =
         Array.isArray(appRow.oidc_redirect_uris) && appRow.oidc_redirect_uris[0]
           ? appRow.oidc_redirect_uris[0]
@@ -280,6 +291,95 @@ describe('API Integration (TEST-PLAN)', () => {
       const parts = res.body.id_token.split('.');
       const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
       expect(payload.email_verified).toBe(false);
+    });
+
+    runOidcTokenTest('POST /api/sso/token email_verified is per OAuth client (two OIDC apps)', async () => {
+      if (process.env.OIDC_EMAIL_VERIFIED_TRUST_ALL === '1') {
+        return;
+      }
+      const { rows: userRows } = await pool.query(
+        'SELECT id FROM users WHERE deleted_at IS NULL ORDER BY email LIMIT 1'
+      );
+      if (!userRows.length) return;
+      const userId = userRows[0].id;
+      const ts = Date.now();
+      const ins1 = await pool.query(
+        `INSERT INTO applications (name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, oauth_client_id, oidc_redirect_uris`,
+        [
+          `OIDC dual A ${ts}`,
+          'test',
+          '',
+          'https://example.com/a',
+          null,
+          `test-dual-a-${ts}`,
+          ['https://example.com/cb-a'],
+          'oidc',
+        ]
+      );
+      const ins2 = await pool.query(
+        `INSERT INTO applications (name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, oauth_client_id, oidc_redirect_uris`,
+        [
+          `OIDC dual B ${ts}`,
+          'test',
+          '',
+          'https://example.com/b',
+          null,
+          `test-dual-b-${ts}`,
+          ['https://example.com/cb-b'],
+          'oidc',
+        ]
+      );
+      const app1 = ins1.rows[0];
+      const app2 = ins2.rows[0];
+
+      await pool.query(
+        `INSERT INTO user_application_oidc_email_verified (user_id, application_id) VALUES ($1, $2)
+         ON CONFLICT (user_id, application_id) DO NOTHING`,
+        [userId, app1.id]
+      );
+      await pool.query(
+        'DELETE FROM user_application_oidc_email_verified WHERE user_id = $1 AND application_id = $2',
+        [userId, app2.id]
+      );
+
+      async function exchangeForApp(appRow) {
+        const redirectUri = appRow.oidc_redirect_uris[0];
+        const codeVerifier = toBase64Url(crypto.randomBytes(48));
+        const codeChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
+        const rawCode = toBase64Url(crypto.randomBytes(32));
+        const expiresAt = new Date(Date.now() + 120000);
+        await oidcDb.insertAuthCode(pool, {
+          rawCode,
+          userId,
+          applicationId: appRow.id,
+          clientId: appRow.oauth_client_id,
+          redirectUri,
+          scope: 'openid profile email',
+          nonce: 'n',
+          codeChallenge,
+          codeChallengeMethod: 'S256',
+          expiresAt,
+        });
+        const res = await request(app).post('/api/sso/token').send({
+          grant_type: 'authorization_code',
+          code: rawCode,
+          redirect_uri: redirectUri,
+          client_id: appRow.oauth_client_id,
+          code_verifier: codeVerifier,
+        });
+        expect(res.status).toBe(200);
+        const parts = res.body.id_token.split('.');
+        return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      }
+
+      const payload1 = await exchangeForApp(app1);
+      const payload2 = await exchangeForApp(app2);
+      expect(payload1.email_verified).toBe(true);
+      expect(payload2.email_verified).toBe(false);
     });
   });
 

@@ -13,12 +13,23 @@ const allowedDomainsDb = require('../db/allowedDomainsDb');
 const passwordPolicyDb = require('../db/passwordPolicyDb');
 const passwordHistoryDb = require('../db/passwordHistoryDb');
 const ssoLinkService = require('../services/ssoLinkService');
+const applicationsDb = require('../db/applicationsDb');
+const userApplicationSsoDb = require('../db/userApplicationSsoDb');
 const { validatePassword } = require('../lib/passwordValidation');
 const { authMiddleware, requireAdmin } = require('../middleware/auth');
 const { auditLog, getClientIp } = require('../middleware/audit');
 const mailer = require('../lib/mailer');
 
 const router = express.Router();
+
+function publicAppBase() {
+  return (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+}
+
+function dashboardVerifyUrl(applicationId, tokenRaw) {
+  const base = publicAppBase();
+  return `${base}/?application_id=${encodeURIComponent(applicationId)}&sso_verify=${encodeURIComponent(tokenRaw)}`;
+}
 
 /** Generate a high-entropy random password (20 chars, alphanumeric + safe symbols). */
 function generateRandomPassword() {
@@ -34,6 +45,16 @@ function generateRandomPassword() {
 router.get('/', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const rows = await usersDb.listWithBu(pool);
+    const { rows: countRows } = await pool.query(
+      `SELECT user_id, COUNT(*)::int AS n
+       FROM user_application_oidc_email_verified
+       GROUP BY user_id`
+    );
+    const verifiedByUser = new Map(countRows.map((c) => [c.user_id, c.n]));
+    const { rows: totRows } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM applications WHERE deleted_at IS NULL AND sso_mode = 'oidc'`
+    );
+    const oidcAppTotal = totRows[0]?.n ?? 0;
     const users = rows.map((r) => ({
       id: r.id,
       email: r.email,
@@ -46,11 +67,37 @@ router.get('/', authMiddleware, requireAdmin, async (req, res) => {
       oidc_linked_at: r.oidc_linked_at || null,
       oidc_linked_by_mode: r.oidc_linked_by_mode || null,
       oidc_subject_fingerprint: r.oidc_sub ? ssoLinkDb.subjectFingerprint(r.oidc_sub) : null,
+      oidc_apps_verified_count: verifiedByUser.get(r.id) || 0,
+      oidc_apps_oidc_total: oidcAppTotal,
     }));
     res.json({ users });
   } catch (err) {
     console.error('List users error:', err);
     res.status(500).json({ error: 'Failed to list users' });
+  }
+});
+
+// GET /api/users/me/application-sso-status — apps visible to user + per-app OIDC verification
+router.get('/me/application-sso-status', authMiddleware, async (req, res) => {
+  try {
+    const me = await usersDb.getById(pool, req.user.id);
+    if (!me) return res.status(404).json({ error: 'User not found' });
+    const buId = me.business_unit_id ?? null;
+    const applications = await applicationsDb.listActive(pool, buId);
+    const verifiedRows = await userApplicationSsoDb.listByUser(pool, req.user.id);
+    const verifiedSet = new Set(verifiedRows.map((x) => String(x.application_id)));
+    const apps = applications.map((a) => ({
+      id: a.id,
+      name: a.name,
+      icon_url: a.icon_url,
+      target_url: a.target_url,
+      sso_mode: a.sso_mode,
+      verified_for_oidc: a.sso_mode === 'oidc' && verifiedSet.has(String(a.id)),
+    }));
+    return res.json({ applications: apps });
+  } catch (err) {
+    console.error('Application SSO status error:', err);
+    return res.status(500).json({ error: 'Failed to load application SSO status' });
   }
 });
 
@@ -72,21 +119,31 @@ router.get('/me/sso-status', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/users/me/sso-connect/start — sends verification link for self-service connect
+// POST /api/users/me/sso-connect/start — sends verification link for one OIDC application
 router.post('/me/sso-connect/start', authMiddleware, async (req, res) => {
   const client = await pool.connect();
   try {
+    const applicationId = String(req.body?.application_id || '').trim();
+    if (!applicationId) return res.status(400).json({ error: 'application_id required' });
     const me = await usersDb.getById(client, req.user.id);
     if (!me) return res.status(404).json({ error: 'User not found' });
+    const app = await applicationsDb.getAccessibleById(client, applicationId, me.business_unit_id);
+    if (!app) return res.status(404).json({ error: 'Application not found or not available for your account' });
+    if (app.sso_mode !== 'oidc') {
+      return res.status(400).json({ error: 'Per-app verification applies to OIDC applications only' });
+    }
     const subject = ssoLinkService.buildSyntheticSubjectForUser(me);
     const result = await ssoLinkService.createEmailVerification(client, {
       user: me,
       mode: 'connect_sso',
       subject,
       actorId: req.user.id,
+      applicationId,
     });
-    const publicBase = (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
-    const verifyUrl = `${publicBase}/change-password?sso_verify=${encodeURIComponent(result.tokenRaw)}`;
+    if (!result.ok) {
+      return res.status(400).json({ error: result.code || 'verification_create_failed' });
+    }
+    const verifyUrl = dashboardVerifyUrl(applicationId, result.tokenRaw);
     try {
       await mailer.sendSsoLinkVerificationEmail({ to: me.email, verifyUrl });
     } catch (mailErr) {
@@ -123,14 +180,16 @@ router.post('/me/sso-unlink', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/users/sso/verify?token=... — consumes verification token and links account
+// GET /api/users/sso/verify?token=...&application_id=... — consumes verification token and links account
 router.get('/sso/verify', authMiddleware, async (req, res) => {
   try {
     const token = String(req.query.token || '').trim();
     if (!token) return res.status(400).json({ error: 'token required' });
+    const applicationId = String(req.query.application_id || '').trim() || null;
     const result = await ssoLinkService.consumeEmailVerificationAndLink(pool, {
       actorId: req.user.id,
       tokenRaw: token,
+      applicationIdFromClient: applicationId,
     });
     if (!result.ok) return res.status(400).json({ error: result.code });
     return res.json({ message: 'SSO linked successfully' });
@@ -169,27 +228,38 @@ router.get('/:id/sso-events', authMiddleware, requireAdmin, async (req, res) => 
   }
 });
 
-// POST /api/users/:id/sso-link/start — admin prelink URL
+// POST /api/users/:id/sso-link/start — admin prelink URL (requires target OIDC application)
 router.post('/:id/sso-link/start', authMiddleware, requireAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
+    const applicationId = String(req.body?.application_id || '').trim();
+    if (!applicationId) return res.status(400).json({ error: 'application_id required' });
     const target = await usersDb.getById(client, req.params.id);
     if (!target) return res.status(404).json({ error: 'User not found' });
+    const app = await applicationsDb.getById(client, applicationId);
+    if (!app) return res.status(404).json({ error: 'Application not found' });
+    if (app.sso_mode !== 'oidc') {
+      return res.status(400).json({ error: 'Prelink applies to OIDC applications only' });
+    }
     const subject = ssoLinkService.buildSyntheticSubjectForUser(target);
     const result = await ssoLinkService.createEmailVerification(client, {
       user: target,
       mode: 'admin_prelink',
       subject,
       actorId: req.user.id,
+      applicationId,
     });
-    const publicBase = (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
-    const url = `${publicBase}/change-password?sso_verify=${encodeURIComponent(result.tokenRaw)}`;
+    if (!result.ok) {
+      return res.status(400).json({ error: result.code || 'verification_create_failed' });
+    }
+    const url = dashboardVerifyUrl(applicationId, result.tokenRaw);
     await ssoLinkDb.insertLinkEvent(client, {
       userId: target.id,
       actorId: req.user.id,
       mode: 'admin_prelink',
       eventType: 'prelink_generated',
       status: 'success',
+      metadata: { application_id: applicationId },
     });
     return res.json({ url, expires_at: result.expiresAt });
   } catch (err) {

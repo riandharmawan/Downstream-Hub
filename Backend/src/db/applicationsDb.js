@@ -50,6 +50,22 @@ async function getByIdForUpdate(db, id) {
   return rows[0] || null;
 }
 
+/** Same visibility rule as listActive: app is global BU or matches user's BU. */
+async function getAccessibleById(db, applicationId, userBusinessUnitId) {
+  const { rows } = await db.query(
+    `SELECT a.id, a.name, a.description, a.icon_url, a.target_url, a.target_bu_id,
+            a.oauth_client_id, a.oidc_redirect_uris, a.sso_mode, a.created_at, a.updated_at,
+            bu.name AS target_bu_name
+     FROM applications a
+     LEFT JOIN business_units bu ON bu.id = a.target_bu_id AND bu.deleted_at IS NULL
+     WHERE a.id = $1 AND a.deleted_at IS NULL
+       AND (a.target_bu_id IS NULL OR a.target_bu_id = $2)`,
+    [applicationId, userBusinessUnitId]
+  );
+  const r = rows[0];
+  return r ? { ...r, target_bu_name: r.target_bu_name || null } : null;
+}
+
 async function create(db, { name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode }) {
   const { rows } = await db.query(
     `INSERT INTO applications (name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode)
@@ -88,6 +104,7 @@ module.exports = {
   listAllWithBuName,
   getById,
   getByIdForUpdate,
+  getAccessibleById,
   create,
   update,
   softDelete,

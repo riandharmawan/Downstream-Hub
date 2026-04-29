@@ -61,6 +61,8 @@ export default function Admin() {
   const [userDeactivateConfirm, setUserDeactivateConfirm] = useState(null);
   const [resetPasswordResult, setResetPasswordResult] = useState(null);
   const [ssoPrelinkResult, setSsoPrelinkResult] = useState(null);
+  const [ssoPrelinkModalUser, setSsoPrelinkModalUser] = useState(null);
+  const [ssoPrelinkAppId, setSsoPrelinkAppId] = useState('');
   const [ssoEventsUser, setSsoEventsUser] = useState(null);
   const [ssoEvents, setSsoEvents] = useState([]);
   const [bulkRowsText, setBulkRowsText] = useState('');
@@ -406,11 +408,27 @@ export default function Admin() {
     }
   }
 
-  async function handleGenerateSsoLink(u) {
+  function openSsoPrelinkModal(u) {
+    setError('');
+    const oidcApps = applications.filter((a) => a.sso_mode === 'oidc');
+    if (oidcApps.length === 0) {
+      setError('No OIDC applications configured. Add one under Applications first.');
+      return;
+    }
+    setSsoPrelinkModalUser(u);
+    setSsoPrelinkAppId(oidcApps[0].id);
+  }
+
+  async function handleConfirmSsoPrelink() {
+    if (!ssoPrelinkModalUser || !ssoPrelinkAppId) return;
     setError('');
     try {
-      const data = await apiRequest(`/api/users/${u.id}/sso-link/start`, { method: 'POST' }, token);
-      setSsoPrelinkResult({ email: u.email, url: data.url, expires_at: data.expires_at });
+      const data = await apiRequest(`/api/users/${ssoPrelinkModalUser.id}/sso-link/start`, {
+        method: 'POST',
+        body: JSON.stringify({ application_id: ssoPrelinkAppId }),
+      }, token);
+      setSsoPrelinkModalUser(null);
+      setSsoPrelinkResult({ email: ssoPrelinkModalUser.email, url: data.url, expires_at: data.expires_at });
       await loadUsers();
     } catch (err) {
       setError(err.error || 'Failed to generate SSO link');
@@ -800,6 +818,7 @@ export default function Admin() {
                   <th style={styles.tableHeader}>Business Unit</th>
                   <th style={styles.tableHeader}>Status</th>
                   <th style={styles.tableHeader}>SSO</th>
+                  <th style={styles.tableHeader}>OIDC apps verified</th>
                   <th style={{ ...styles.tableHeader, width: 420 }}>Actions</th>
                 </tr>
               </thead>
@@ -811,10 +830,15 @@ export default function Admin() {
                     <td style={styles.tableCell}>{u.business_unit_name || '—'}</td>
                     <td style={styles.tableCell}>{u.locked_until && new Date(u.locked_until) > new Date() ? 'Locked' : '—'}</td>
                     <td style={styles.tableCell}>{u.oidc_linked ? 'Linked' : 'Not linked'}</td>
+                    <td style={styles.tableCell}>
+                      {(u.oidc_apps_oidc_total ?? 0) > 0
+                        ? `${u.oidc_apps_verified_count ?? 0} / ${u.oidc_apps_oidc_total}`
+                        : '—'}
+                    </td>
                     <td style={styles.actionsCell}>
                       <button type="button" className="btn-secondary" onClick={() => openUserBuEdit(u)}>Edit BU</button>
                       <button type="button" className="btn-secondary" onClick={() => handleResetPassword(u)}>Reset password</button>
-                      <button type="button" className="btn-secondary" onClick={() => handleGenerateSsoLink(u)}>Generate SSO link</button>
+                      <button type="button" className="btn-secondary" onClick={() => openSsoPrelinkModal(u)}>Generate SSO link</button>
                       <button type="button" className="btn-secondary" onClick={() => handleLoadSsoEvents(u)}>View SSO history</button>
                       {u.oidc_linked && (
                         <button type="button" className="btn-secondary" onClick={() => handleAdminUnlinkSso(u)}>Unlink SSO</button>
@@ -920,6 +944,26 @@ export default function Admin() {
               </table>
             )}
           </section>
+          {ssoPrelinkModalUser && (
+            <div style={styles.modal}>
+              <div style={styles.modalContent}>
+                <p>Generate SSO verification link for <strong>{ssoPrelinkModalUser.email}</strong>. Choose the OIDC application this link is for:</p>
+                <select
+                  value={ssoPrelinkAppId}
+                  onChange={(e) => setSsoPrelinkAppId(e.target.value)}
+                  style={{ ...styles.input, maxWidth: '100%', marginTop: 'var(--space-3)' }}
+                >
+                  {applications.filter((a) => a.sso_mode === 'oidc').map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                </select>
+                <div style={{ ...styles.formActions, marginTop: 'var(--space-3)' }}>
+                  <button type="button" className="btn-primary" onClick={handleConfirmSsoPrelink}>Generate link</button>
+                  <button type="button" className="btn-secondary" onClick={() => { setSsoPrelinkModalUser(null); setError(''); }}>Cancel</button>
+                </div>
+              </div>
+            </div>
+          )}
           {ssoPrelinkResult && (
             <div style={styles.modal}>
               <div style={styles.modalContent}>

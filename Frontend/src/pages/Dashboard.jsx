@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
 import { applicationInitials } from '../utils/applicationInitials';
@@ -7,17 +7,63 @@ import { resolveIconSrc } from '../utils/resolveIconSrc';
 
 export default function Dashboard() {
   const { user, token, logout } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [applications, setApplications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [redirecting, setRedirecting] = useState(null);
+  const [verifyBanner, setVerifyBanner] = useState('');
+  const [sendingVerifyId, setSendingVerifyId] = useState(null);
+
+  const loadApps = useCallback(async () => {
+    const data = await apiRequest('/api/users/me/application-sso-status', {}, token);
+    setApplications(data.applications || []);
+  }, [token]);
 
   useEffect(() => {
-    apiRequest('/api/applications/for-me', {}, token)
-      .then((data) => setApplications(data.applications || []))
-      .catch((err) => setError(err.error || 'Failed to load applications'))
-      .finally(() => setLoading(false));
-  }, [token]);
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError('');
+      try {
+        await loadApps();
+      } catch (err) {
+        if (!cancelled) setError(err.error || 'Failed to load applications');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadApps]);
+
+  useEffect(() => {
+    const tokenRaw = searchParams.get('sso_verify');
+    if (!tokenRaw) return;
+    const applicationId = searchParams.get('application_id');
+    let ignore = false;
+    (async () => {
+      setError('');
+      try {
+        const q = `token=${encodeURIComponent(tokenRaw)}${applicationId ? `&application_id=${encodeURIComponent(applicationId)}` : ''}`;
+        await apiRequest(`/api/users/sso/verify?${q}`, {}, token);
+        if (!ignore) {
+          setVerifyBanner('Application access verified. You can open OIDC apps that require verification.');
+          await loadApps();
+        }
+      } catch (err) {
+        if (!ignore) setError(err.error || 'Verification link failed or expired');
+      } finally {
+        if (!ignore) {
+          setSearchParams({}, { replace: true });
+        }
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [searchParams, token, setSearchParams, loadApps]);
 
   async function handleAppClick(app) {
     setRedirecting(app.id);
@@ -28,8 +74,6 @@ export default function Dashboard() {
         {},
         token
       );
-      // Do not pass noopener in open() — with noopener many browsers return null even when the tab opens,
-      // which falsely looked like "popup blocked". Open first, then drop opener reference.
       const newTab = window.open(bridgeUrl, '_blank');
       if (newTab) {
         try {
@@ -44,6 +88,24 @@ export default function Dashboard() {
     } catch (err) {
       setError(err.error || 'Redirect failed');
       setRedirecting(null);
+    }
+  }
+
+  async function handleSendVerification(e, appId) {
+    e.stopPropagation();
+    setSendingVerifyId(appId);
+    setError('');
+    try {
+      await apiRequest(
+        '/api/users/me/sso-connect/start',
+        { method: 'POST', body: JSON.stringify({ application_id: appId }) },
+        token
+      );
+      setVerifyBanner('Verification email sent. Check your inbox and open the link.');
+    } catch (err) {
+      setError(err.error || 'Failed to send verification email');
+    } finally {
+      setSendingVerifyId(null);
     }
   }
 
@@ -64,7 +126,10 @@ export default function Dashboard() {
         </div>
       </header>
       <main style={styles.main}>
-        <p style={styles.subtitle}>Single source of truth for internal tools — click an app to open it with SSO.</p>
+        <p style={styles.subtitle}>
+          Single source of truth for internal tools — click an app to open it with SSO. OIDC apps may require a one-time email verification per application.
+        </p>
+        {verifyBanner && <div style={styles.success}>{verifyBanner}</div>}
         {error && <div style={styles.error}>{error}</div>}
         {loading ? (
           <p>Loading applications…</p>
@@ -92,7 +157,26 @@ export default function Dashboard() {
                   )}
                 </div>
                 <div style={styles.cardName}>{app.name}</div>
-                {app.description && <div style={styles.cardDesc}>{app.description}</div>}
+                {app.sso_mode === 'oidc' && (
+                  <div style={styles.oidcRow} onClick={(e) => e.stopPropagation()}>
+                    {app.verified_for_oidc ? (
+                      <span style={styles.verifiedBadge}>OIDC verified</span>
+                    ) : (
+                      <>
+                        <span style={styles.needsVerify}>Verification required</span>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={styles.verifyBtn}
+                          disabled={!!sendingVerifyId}
+                          onClick={(e) => handleSendVerification(e, app.id)}
+                        >
+                          {sendingVerifyId === app.id ? 'Sending…' : 'Send verification email'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
                 {redirecting === app.id && <div style={styles.redirecting}>Opening…</div>}
               </button>
               );
@@ -115,6 +199,7 @@ const styles = {
   logoutBtn: {},
   main: { maxWidth: 960, margin: '0 auto', padding: 'var(--space-4)' },
   subtitle: { color: 'var(--color-text-steel)', marginBottom: 'var(--space-4)', fontSize: 'var(--text-small)' },
+  success: { padding: 'var(--space-3)', background: '#DCFCE7', color: '#166534', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-small)' },
   error: { padding: 'var(--space-3)', background: '#FEE2E2', color: 'var(--color-destructive)', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-small)' },
   empty: { color: 'var(--color-text-steel)', fontSize: 'var(--text-small)' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 'var(--space-3)' },
@@ -135,6 +220,9 @@ const styles = {
     fontFamily: 'var(--font-heading, system-ui, sans-serif)',
   },
   cardName: { fontWeight: 'var(--font-weight-semibold)', marginBottom: 'var(--space-1)', color: 'var(--color-text-charcoal)' },
-  cardDesc: { fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)', lineHeight: 'var(--line-height-default)' },
+  oidcRow: { marginTop: 'var(--space-2)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', alignItems: 'center' },
+  verifiedBadge: { fontSize: 'var(--text-xs)', color: '#166534' },
+  needsVerify: { fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)' },
+  verifyBtn: { fontSize: 'var(--text-xs)', padding: '4px 8px' },
   redirecting: { marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--color-primary)' },
 };

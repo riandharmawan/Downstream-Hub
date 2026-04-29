@@ -19,10 +19,12 @@ export default function Login() {
     const params = new URLSearchParams(location.search || '');
     const token = params.get('sso_verify');
     if (!token) return;
+    const applicationId = params.get('application_id');
     let ignore = false;
     (async () => {
       try {
-        const data = await apiRequest(`/api/auth/oidc/auto-link/verify?token=${encodeURIComponent(token)}`);
+        const q = `token=${encodeURIComponent(token)}${applicationId ? `&application_id=${encodeURIComponent(applicationId)}` : ''}`;
+        const data = await apiRequest(`/api/auth/oidc/auto-link/verify?${q}`);
         if (!ignore) setError(data.message === 'linked' ? '' : 'Failed to verify SSO link');
       } catch (err) {
         if (!ignore) setError(err.error || 'SSO link verification failed');

@@ -9,6 +9,7 @@ const applicationsDb = require('../db/applicationsDb');
 const ssoAccessLogsDb = require('../db/ssoAccessLogsDb');
 const oidcDb = require('../db/oidcDb');
 const usersDb = require('../db/usersDb');
+const userApplicationSsoDb = require('../db/userApplicationSsoDb');
 const { authMiddleware, optionalAuth } = require('../middleware/auth');
 const { getClientIp } = require('../middleware/audit');
 const { SignJWT, jwtVerify } = require('jose');
@@ -26,8 +27,11 @@ function toBase64Url(buffer) {
   return Buffer.from(buffer).toString('base64url');
 }
 
-function effectiveEmailVerified(userRow) {
+async function effectiveEmailVerifiedForApplication(db, userId, applicationId, userRow) {
   if (OIDC_EMAIL_VERIFIED_TRUST_ALL) return true;
+  if (applicationId) {
+    return userApplicationSsoDb.isVerified(db, userId, applicationId);
+  }
   return !!userRow?.hub_oidc_email_verified_at;
 }
 
@@ -113,11 +117,12 @@ router.get('/redirect', authMiddleware, async (req, res) => {
     const targetUrl = targetPath ? `${baseUrl}${targetPath}` : baseUrl;
 
     const ssoUser = await usersDb.getForSsoToken(pool, req.user.id);
+    const emailVerified = await effectiveEmailVerifiedForApplication(pool, req.user.id, app.id, ssoUser);
     const payload = {
       user_id: req.user.id,
       email: req.user.email,
       name: (ssoUser && ssoUser.name) || req.user.email,
-      email_verified: effectiveEmailVerified(ssoUser),
+      email_verified: emailVerified,
     };
     const audience = app.oauth_client_id || app.id;
     const mode = app.sso_mode === 'oidc' ? 'oidc' : 'bridge';
@@ -320,12 +325,13 @@ router.post('/token', express.json(), async (req, res) => {
     const user = await usersDb.getForSsoToken(pool, record.user_id);
     if (!user) return res.status(400).json({ error: 'invalid_grant' });
 
+    const emailVerified = await effectiveEmailVerifiedForApplication(pool, user.id, record.application_id, user);
     const idToken = await signSsoToken(
       {
         user_id: user.id,
         email: user.email,
         name: user.name || user.email,
-        email_verified: effectiveEmailVerified(user),
+        email_verified: emailVerified,
       },
       clientId
     );
