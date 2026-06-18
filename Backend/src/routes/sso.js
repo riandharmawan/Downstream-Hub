@@ -9,14 +9,17 @@ const applicationsDb = require('../db/applicationsDb');
 const ssoAccessLogsDb = require('../db/ssoAccessLogsDb');
 const oidcDb = require('../db/oidcDb');
 const usersDb = require('../db/usersDb');
+const ssoLinkService = require('../services/ssoLinkService');
 const { authMiddleware, optionalAuth } = require('../middleware/auth');
 const { getClientIp } = require('../middleware/audit');
+const mailer = require('../lib/mailer');
 const { SignJWT, jwtVerify } = require('jose');
 const { loadKeys, hashSha256 } = require('../lib/ssoKeyStore');
 
 const router = express.Router();
 const SSO_EXPIRY_SECONDS = parseInt(process.env.SSO_TOKEN_EXPIRY_SECONDS || '60', 10);
 const API_PUBLIC_URL = (process.env.API_PUBLIC_URL || 'http://localhost:4000').replace(/\/$/, '');
+const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
 const OIDC_CODE_TTL_SECONDS = parseInt(process.env.OIDC_CODE_TTL_SECONDS || '120', 10);
 const ENFORCE_OIDC_ONLY = process.env.SSO_ENFORCE_OIDC_ONLY === '1';
 /** Dev/staging only: force id_token email_verified true without DB flag. */
@@ -108,11 +111,43 @@ router.get('/redirect', authMiddleware, async (req, res) => {
     if (!app) {
       return res.status(404).json({ error: 'Application not found' });
     }
+
+    const ssoUser = await usersDb.getForSsoToken(pool, req.user.id);
+    if (!effectiveEmailVerified(ssoUser)) {
+      const user = await usersDb.getById(pool, req.user.id);
+      if (user) {
+        const created = await ssoLinkService.createEmailVerification(pool, {
+          actorId: req.user.id,
+          user,
+          subject: ssoLinkService.buildSyntheticSubjectForUser(user),
+          mode: 'hub_oidc_email_verify',
+        });
+        if (created.ok) {
+          const verifyUrl = `${PUBLIC_APP_URL}/login?sso_verify=${encodeURIComponent(created.tokenRaw)}`;
+          try {
+            await mailer.sendSsoLinkVerificationEmail({ to: user.email, verifyUrl });
+          } catch (mailErr) {
+            console.error('Hub OIDC email verification email error:', mailErr.message);
+          }
+        }
+      }
+      await ssoAccessLogsDb.insert(pool, {
+        user_id: req.user.id,
+        application_id: app.id,
+        outcome: 'email_verification_required',
+        ip_address: getClientIp(req),
+      });
+      return res.status(403).json({
+        code: 'EMAIL_VERIFICATION_REQUIRED',
+        error:
+          'Email verification is required for SSO. Check your inbox for a verification link, then open this app again.',
+      });
+    }
+
     const baseUrl = app.target_url.replace(/\/$/, '');
     const targetPath = baseUrl.includes('/auth/') ? '' : '/auth/hub';
     const targetUrl = targetPath ? `${baseUrl}${targetPath}` : baseUrl;
 
-    const ssoUser = await usersDb.getForSsoToken(pool, req.user.id);
     const payload = {
       user_id: req.user.id,
       email: req.user.email,

@@ -42,7 +42,11 @@ export default function Dashboard() {
       }
       setRedirecting(null);
     } catch (err) {
-      setError(err.error || 'Redirect failed');
+      if (err.code === 'EMAIL_VERIFICATION_REQUIRED' || err.code === 'APP_VERIFICATION_REQUIRED') {
+        setError(err.error || 'Verification email sent. Check your inbox, then try again.');
+      } else {
+        setError(err.error || 'Redirect failed');
+      }
       setRedirecting(null);
     }
   }
