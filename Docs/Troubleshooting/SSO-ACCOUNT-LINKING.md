@@ -28,11 +28,6 @@
   1. Check backend logs for mailer errors.
   2. In non-SMTP environments, verification URL is printed to backend logs.
 
-## 3) Bulk operations
+## 3) Admin-initiated linking
 
-- Dry-run first via `POST /api/users/sso-link/bulk/dry-run`.
-- Execute via `POST /api/users/sso-link/bulk/jobs`.
-- Inspect results:
-  - `GET /api/users/sso-link/bulk/jobs/:jobId`
-  - `GET /api/users/sso-link/bulk/jobs/:jobId/items`
-  - `GET /api/users/sso-link/bulk/jobs/:jobId/export.csv`
+Use **Admin → Users → Generate SSO link** to produce a one-time prelink URL for a specific user. The link is delivered manually (e.g. email or Slack). Once the user clicks it and completes the Hub flow, their account is linked. Review the full event history per user via `GET /api/users/:id/sso-events`.

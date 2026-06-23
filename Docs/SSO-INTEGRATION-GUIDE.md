@@ -108,7 +108,7 @@ This removes friction: no manual “link” UI in the app for the common case, o
 
 ### Coexistence with Hub “account linking” APIs (§11)
 
-The Hub APIs under **§11** (e.g. connect SSO, admin bulk link) manage **`users.oidc_sub` on the Hub** for **Hub ↔ upstream IdP** coexistence and Hub login behavior.
+The Hub APIs under **§11** (e.g. connect SSO, admin prelink) manage **`users.oidc_sub` on the Hub** for **Hub ↔ upstream IdP** coexistence and Hub login behavior.
 
 **Downstream apps** should still implement **§4** using **`id_token.sub`** and **`email_verified`** against **your** application’s user table. You do not need to duplicate Hub’s internal `oidc_sub` linking unless your architecture explicitly requires both.
 
@@ -263,14 +263,6 @@ The Hub exposes account-linking APIs to support seamless local+SSO coexistence *
   - `POST /api/users/:id/sso-link/start`
   - `GET /api/users/:id/sso-events`
   - `POST /api/users/:id/sso-unlink`
-- Bulk:
-  - `POST /api/users/sso-link/bulk/dry-run`
-  - `POST /api/users/sso-link/bulk/jobs`
-  - `GET /api/users/sso-link/bulk/jobs/:jobId`
-  - `GET /api/users/sso-link/bulk/jobs/:jobId/items`
-  - `POST /api/users/sso-link/bulk/jobs/:jobId/retry`
-  - `GET /api/users/sso-link/bulk/jobs/:jobId/export.csv`
-
 Auto-link helper endpoints (email verification perimeter):
 
 - `POST /api/auth/oidc/auto-link/start`

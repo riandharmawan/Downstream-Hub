@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useMemo } from 'react';
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest, apiUpload } from '../api';
 import { applicationInitials } from '../utils/applicationInitials';
 import { resolveIconSrc } from '../utils/resolveIconSrc';
+import MultiSelectDropdown from '../components/admin/MultiSelectDropdown';
+import AdminModal from '../components/admin/AdminModal';
 
 const SECTIONS = [
   { id: 'domains', label: 'Domains', path: 'domains' },
@@ -17,10 +19,23 @@ export default function Admin() {
   const { user, token, logout } = useAuth();
   const { section } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const activeSection = SECTIONS.some((s) => s.path === section) ? section : null;
   const [applications, setApplications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // Applications filter state — synced to URL params when on applications section
+  const [appBuFilterIds, setAppBuFilterIds] = useState(() => {
+    const raw = searchParams.get('bu');
+    return raw ? raw.split(',').filter(Boolean) : [];
+  });
+  const [appBuFilterIncludeGlobal, setAppBuFilterIncludeGlobal] = useState(() => {
+    return searchParams.get('global') === '1';
+  });
+  const [appSearchQuery, setAppSearchQuery] = useState(() => {
+    return searchParams.get('q') || '';
+  });
   const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
@@ -28,7 +43,7 @@ export default function Admin() {
     description: '',
     icon_url: '',
     target_url: '',
-    target_bu_id: '',
+    target_bu_ids: [],
     sso_mode: 'bridge',
     oauth_client_id: '',
     oidc_redirect_uris: '',
@@ -63,9 +78,6 @@ export default function Admin() {
   const [ssoPrelinkResult, setSsoPrelinkResult] = useState(null);
   const [ssoEventsUser, setSsoEventsUser] = useState(null);
   const [ssoEvents, setSsoEvents] = useState([]);
-  const [bulkRowsText, setBulkRowsText] = useState('');
-  const [bulkDryRunRows, setBulkDryRunRows] = useState([]);
-  const [bulkJobId, setBulkJobId] = useState('');
   const [passwordExpiryDays, setPasswordExpiryDays] = useState(0);
   const [minPasswordLength, setMinPasswordLength] = useState(6);
   const [requireUppercase, setRequireUppercase] = useState(true);
@@ -77,7 +89,23 @@ export default function Admin() {
   const [lockoutDurationMins, setLockoutDurationMins] = useState(30);
   const [policyLoading, setPolicyLoading] = useState(true);
   const [policySaving, setPolicySaving] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [userMoreMenuId, setUserMoreMenuId] = useState(null);
 
+  // Auto-dismiss success banner after 3s
+  useEffect(() => {
+    if (!successMessage) return;
+    const t = setTimeout(() => setSuccessMessage(''), 3000);
+    return () => clearTimeout(t);
+  }, [successMessage]);
+
+  // Clear section-level error when navigating between sections
+  useEffect(() => {
+    setError('');
+    setSuccessMessage('');
+  }, [activeSection]);
+
+  // Applications + BUs load eagerly — BUs are shared across sections (forms, filters)
   useEffect(() => {
     if (user?.role !== 'Admin') return;
     apiRequest('/api/applications', {}, token)
@@ -86,13 +114,14 @@ export default function Admin() {
       .finally(() => setLoading(false));
   }, [token, user?.role]);
 
+  // Domains — load only when on domains section
   useEffect(() => {
-    if (user?.role !== 'Admin') return;
+    if (user?.role !== 'Admin' || activeSection !== 'domains') return;
     apiRequest('/api/allowed-domains', {}, token)
       .then((data) => setDomains(data.allowed_domains || []))
       .catch(() => setDomains([]))
       .finally(() => setDomainsLoading(false));
-  }, [token, user?.role]);
+  }, [token, user?.role, activeSection]);
 
   useEffect(() => {
     if (user?.role !== 'Admin') return;
@@ -102,16 +131,18 @@ export default function Admin() {
       .finally(() => setBusLoading(false));
   }, [token, user?.role]);
 
+  // Users — load only when on users section
   useEffect(() => {
-    if (user?.role !== 'Admin') return;
+    if (user?.role !== 'Admin' || activeSection !== 'users') return;
     apiRequest('/api/users', {}, token)
       .then((data) => setUsers(data.users || []))
       .catch(() => setUsers([]))
       .finally(() => setUsersLoading(false));
-  }, [token, user?.role]);
+  }, [token, user?.role, activeSection]);
 
+  // Password policy — load only when on password-policy section
   useEffect(() => {
-    if (user?.role !== 'Admin') return;
+    if (user?.role !== 'Admin' || activeSection !== 'password-policy') return;
     apiRequest('/api/settings/password-policy', {}, token)
       .then((data) => {
         setPasswordExpiryDays(data.password_expiry_days ?? 0);
@@ -127,6 +158,47 @@ export default function Admin() {
       .catch(() => setPasswordExpiryDays(0))
       .finally(() => setPolicyLoading(false));
   }, [token, user?.role]);
+
+  // Sync application filter state → URL params (only while on applications section)
+  useEffect(() => {
+    if (activeSection !== 'applications') return;
+    const params = new URLSearchParams(searchParams);
+    if (appBuFilterIds.length > 0) {
+      params.set('bu', appBuFilterIds.join(','));
+    } else {
+      params.delete('bu');
+    }
+    if (appBuFilterIncludeGlobal) {
+      params.set('global', '1');
+    } else {
+      params.delete('global');
+    }
+    if (appSearchQuery.trim()) {
+      params.set('q', appSearchQuery.trim());
+    } else {
+      params.delete('q');
+    }
+    setSearchParams(params, { replace: true });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appBuFilterIds, appBuFilterIncludeGlobal, appSearchQuery, activeSection]);
+
+  // Filtered application list (client-side; Phase C wires target_bu_ids[] from junction)
+  const filteredApplications = useMemo(() => {
+    const q = appSearchQuery.trim().toLowerCase();
+    return applications.filter((app) => {
+      // Text search
+      if (q && !app.name.toLowerCase().includes(q) && !app.target_url.toLowerCase().includes(q)) {
+        return false;
+      }
+      // BU filter
+      if (appBuFilterIds.length > 0) {
+        const isGlobal = !app.target_bu_id;
+        if (isGlobal) return appBuFilterIncludeGlobal;
+        return appBuFilterIds.includes(app.target_bu_id);
+      }
+      return true;
+    });
+  }, [applications, appBuFilterIds, appBuFilterIncludeGlobal, appSearchQuery]);
 
   async function handleSavePasswordPolicy(e) {
     e.preventDefault();
@@ -161,29 +233,35 @@ export default function Admin() {
     }
   }
 
+  const emptyForm = {
+    name: '',
+    description: '',
+    icon_url: '',
+    target_url: '',
+    target_bu_ids: [],
+    sso_mode: 'bridge',
+    oauth_client_id: '',
+    oidc_redirect_uris: '',
+  };
+
   function openCreate() {
     setEditing(null);
-    setForm({
-      name: '',
-      description: '',
-      icon_url: '',
-      target_url: '',
-      target_bu_id: '',
-      sso_mode: 'bridge',
-      oauth_client_id: '',
-      oidc_redirect_uris: '',
-    });
+    setForm(emptyForm);
     setShowForm(true);
   }
 
   function openEdit(app) {
     setEditing(app);
+    // Prefer target_bu_ids array; fall back to legacy single target_bu_id
+    const buIds = Array.isArray(app.target_bu_ids) && app.target_bu_ids.length > 0
+      ? app.target_bu_ids
+      : (app.target_bu_id ? [app.target_bu_id] : []);
     setForm({
       name: app.name,
       description: app.description || '',
       icon_url: app.icon_url || '',
       target_url: app.target_url || '',
-      target_bu_id: app.target_bu_id || '',
+      target_bu_ids: buIds,
       sso_mode: app.sso_mode || 'bridge',
       oauth_client_id: app.oauth_client_id || '',
       oidc_redirect_uris: Array.isArray(app.oidc_redirect_uris) ? app.oidc_redirect_uris.join('\n') : '',
@@ -441,46 +519,6 @@ export default function Admin() {
     }
   }
 
-  function parseBulkRows() {
-    return String(bulkRowsText || '')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [email, oidc_sub] = line.split(',').map((x) => String(x || '').trim());
-        return { email, oidc_sub };
-      });
-  }
-
-  async function handleBulkDryRun() {
-    setError('');
-    try {
-      const rows = parseBulkRows();
-      const data = await apiRequest('/api/users/sso-link/bulk/dry-run', {
-        method: 'POST',
-        body: JSON.stringify({ rows }),
-      }, token);
-      setBulkDryRunRows(data.rows || []);
-    } catch (err) {
-      setError(err.error || 'Bulk dry-run failed');
-    }
-  }
-
-  async function handleBulkExecute() {
-    setError('');
-    try {
-      const rows = parseBulkRows();
-      const data = await apiRequest('/api/users/sso-link/bulk/jobs', {
-        method: 'POST',
-        body: JSON.stringify({ rows }),
-      }, token);
-      setBulkJobId(data.job_id || '');
-      await loadUsers();
-    } catch (err) {
-      setError(err.error || 'Bulk execution failed');
-    }
-  }
-
   function copyPasswordToClipboard() {
     if (!resetPasswordResult?.temporary_password) return;
     navigator.clipboard.writeText(resetPasswordResult.temporary_password);
@@ -527,7 +565,7 @@ export default function Admin() {
         description: form.description,
         icon_url: form.icon_url,
         target_url: form.target_url,
-        target_bu_id: form.target_bu_id === '' ? null : form.target_bu_id,
+        target_bu_ids: form.target_bu_ids || [],
         sso_mode: form.sso_mode === 'oidc' ? 'oidc' : 'bridge',
         oauth_client_id: form.oauth_client_id.trim() || null,
         oidc_redirect_uris: redirectUris,
@@ -541,16 +579,8 @@ export default function Admin() {
       setApplications(data.applications || []);
       setEditing(null);
       setShowForm(false);
-      setForm({
-        name: '',
-        description: '',
-        icon_url: '',
-        target_url: '',
-        target_bu_id: '',
-        sso_mode: 'bridge',
-        oauth_client_id: '',
-        oidc_redirect_uris: '',
-      });
+      setForm(emptyForm);
+      setSuccessMessage(editing ? 'Application updated.' : 'Application created.');
     } catch (err) {
       setError(err.error || 'Save failed');
     } finally {
@@ -610,6 +640,7 @@ export default function Admin() {
         </nav>
         <main style={styles.main}>
           {error && <div style={styles.error}>{error}</div>}
+          {successMessage && <div style={styles.success}>{successMessage}</div>}
 
           {activeSection === 'domains' && (
         <section style={styles.section}>
@@ -811,18 +842,32 @@ export default function Admin() {
                     <td style={styles.tableCell}>{u.business_unit_name || '—'}</td>
                     <td style={styles.tableCell}>{u.locked_until && new Date(u.locked_until) > new Date() ? 'Locked' : '—'}</td>
                     <td style={styles.tableCell}>{u.oidc_linked ? 'Linked' : 'Not linked'}</td>
-                    <td style={styles.actionsCell}>
+                    <td style={{ ...styles.actionsCell, flexWrap: 'wrap' }}>
                       <button type="button" className="btn-secondary" onClick={() => openUserBuEdit(u)}>Edit BU</button>
-                      <button type="button" className="btn-secondary" onClick={() => handleResetPassword(u)}>Reset password</button>
-                      <button type="button" className="btn-secondary" onClick={() => handleGenerateSsoLink(u)}>Generate SSO link</button>
-                      <button type="button" className="btn-secondary" onClick={() => handleLoadSsoEvents(u)}>View SSO history</button>
-                      {u.oidc_linked && (
-                        <button type="button" className="btn-secondary" onClick={() => handleAdminUnlinkSso(u)}>Unlink SSO</button>
-                      )}
                       {u.locked_until && new Date(u.locked_until) > new Date() && (
                         <button type="button" className="btn-primary" onClick={() => handleUnlock(u)}>Unlock</button>
                       )}
                       <button type="button" className="btn-secondary" onClick={() => setUserDeactivateConfirm(u)}>Deactivate</button>
+                      {/* SSO / More dropdown */}
+                      <div style={{ position: 'relative' }}>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => setUserMoreMenuId(userMoreMenuId === u.id ? null : u.id)}
+                        >
+                          SSO / More ▾
+                        </button>
+                        {userMoreMenuId === u.id && (
+                          <div style={styles.moreMenu} onMouseLeave={() => setUserMoreMenuId(null)}>
+                            <button type="button" style={styles.moreMenuItem} onClick={() => { handleResetPassword(u); setUserMoreMenuId(null); }}>Reset password</button>
+                            <button type="button" style={styles.moreMenuItem} onClick={() => { handleGenerateSsoLink(u); setUserMoreMenuId(null); }}>Generate SSO link</button>
+                            <button type="button" style={styles.moreMenuItem} onClick={() => { handleLoadSsoEvents(u); setUserMoreMenuId(null); }}>View SSO history</button>
+                            {u.oidc_linked && (
+                              <button type="button" style={styles.moreMenuItem} onClick={() => { handleAdminUnlinkSso(u); setUserMoreMenuId(null); }}>Unlink SSO</button>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -882,44 +927,6 @@ export default function Admin() {
               </div>
             </div>
           )}
-          <section style={{ marginTop: 'var(--space-4)' }}>
-            <h3 style={styles.formTitle}>Bulk SSO linking</h3>
-            <p style={styles.helpText}>Paste CSV-like lines: <code>email,oidc_sub</code> (one row per line).</p>
-            <textarea
-              rows={6}
-              style={styles.textarea}
-              value={bulkRowsText}
-              onChange={(e) => setBulkRowsText(e.target.value)}
-              placeholder="alice@company.com,sub-123&#10;bob@company.com,sub-456"
-            />
-            <div style={styles.formActions}>
-              <button type="button" className="btn-secondary" onClick={handleBulkDryRun}>Dry-run</button>
-              <button type="button" className="btn-primary" onClick={handleBulkExecute}>Execute</button>
-            </div>
-            {bulkJobId && <p style={styles.helpText}>Last job ID: {bulkJobId}</p>}
-            {bulkDryRunRows.length > 0 && (
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.tableHeader}>Email</th>
-                    <th style={styles.tableHeader}>Subject</th>
-                    <th style={styles.tableHeader}>Result</th>
-                    <th style={styles.tableHeader}>Reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bulkDryRunRows.map((row, idx) => (
-                    <tr key={`${row.email || 'row'}-${idx}`}>
-                      <td style={styles.tableCell}>{row.email || '—'}</td>
-                      <td style={styles.tableCell}>{row.oidc_sub || '—'}</td>
-                      <td style={styles.tableCell}>{row.final_status || '—'}</td>
-                      <td style={styles.tableCell}>{row.reason_code || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </section>
           {ssoPrelinkResult && (
             <div style={styles.modal}>
               <div style={styles.modalContent}>
@@ -973,10 +980,36 @@ export default function Admin() {
         <>
         <section style={styles.section}>
           <h2 style={styles.sectionTitle}>Applications</h2>
-          <p style={styles.sectionDesc}>Add and manage internal apps. Set <strong>Target BU</strong> to limit visibility to one Business Unit, or leave as &quot;All BUs (Global)&quot; so everyone sees the app. URL validation and confirmation before delete.</p>
+          <p style={styles.sectionDesc}>Add and manage internal apps. Set <strong>Target BUs</strong> to limit visibility to specific Business Units, or leave empty so everyone sees the app (Global). Use the filter below to narrow the list.</p>
         </section>
-        <div style={styles.toolbar}>
+        <div style={{ ...styles.toolbar, gap: 'var(--space-2)', flexWrap: 'wrap' }}>
           <button type="button" className="btn-secondary" onClick={openCreate}>Add application</button>
+          <input
+            type="search"
+            placeholder="Search by name or URL…"
+            value={appSearchQuery}
+            onChange={(e) => setAppSearchQuery(e.target.value)}
+            style={{ ...styles.input, maxWidth: 220, margin: 0 }}
+            aria-label="Search applications"
+          />
+          <MultiSelectDropdown
+            options={businessUnits.map((bu) => ({ id: bu.id, label: bu.name }))}
+            selected={appBuFilterIds}
+            onChange={setAppBuFilterIds}
+            placeholder="Filter by BU"
+            includeAllOption
+            includeGlobal={appBuFilterIncludeGlobal}
+            onIncludeGlobalChange={setAppBuFilterIncludeGlobal}
+          />
+          {(appBuFilterIds.length > 0 || appBuFilterIncludeGlobal || appSearchQuery) && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => { setAppBuFilterIds([]); setAppBuFilterIncludeGlobal(false); setAppSearchQuery(''); }}
+            >
+              Clear filters
+            </button>
+          )}
         </div>
 
         {showForm && (
@@ -1047,17 +1080,16 @@ export default function Admin() {
               onChange={(e) => setForm((f) => ({ ...f, icon_url: e.target.value }))}
               style={styles.input}
             />
-            <label style={styles.label}>Target Business Unit</label>
-            <select
-              value={form.target_bu_id === null || form.target_bu_id === undefined ? '' : form.target_bu_id}
-              onChange={(e) => setForm((f) => ({ ...f, target_bu_id: e.target.value === '' ? null : e.target.value }))}
-              style={styles.input}
-            >
-              <option value="">All BUs (Global)</option>
-              {businessUnits.map((bu) => (
-                <option key={bu.id} value={bu.id}>{bu.name}</option>
-              ))}
-            </select>
+            <label style={styles.label}>Target Business Units</label>
+            <MultiSelectDropdown
+              options={businessUnits.map((bu) => ({ id: bu.id, label: bu.name }))}
+              selected={form.target_bu_ids || []}
+              onChange={(ids) => setForm((f) => ({ ...f, target_bu_ids: ids }))}
+              placeholder="Global (all users)"
+            />
+            <p style={styles.helpText}>
+              Leave empty to make this app visible to <strong>all users</strong> (Global). Select one or more BUs to restrict visibility.
+            </p>
             <div style={styles.subSection}>
               <h4 style={styles.subSectionTitle}>OIDC Setting</h4>
               <p style={styles.helpText}>
@@ -1097,16 +1129,7 @@ export default function Admin() {
                 onClick={() => {
                   setEditing(null);
                   setShowForm(false);
-                  setForm({
-                    name: '',
-                    description: '',
-                    icon_url: '',
-                    target_url: '',
-                    target_bu_id: '',
-                    sso_mode: 'bridge',
-                    oauth_client_id: '',
-                    oidc_redirect_uris: '',
-                  });
+                  setForm(emptyForm);
                 }}
               >
                 Cancel
@@ -1129,7 +1152,13 @@ export default function Admin() {
               </tr>
             </thead>
             <tbody>
-              {applications.map((app) => {
+              {filteredApplications.length === 0 ? (
+                <tr>
+                  <td colSpan={5} style={{ ...styles.tableCell, textAlign: 'center', color: 'var(--color-text-steel)', padding: 'var(--space-4)' }}>
+                    {applications.length === 0 ? 'No applications yet.' : 'No applications match the current filters.'}
+                  </td>
+                </tr>
+              ) : filteredApplications.map((app) => {
                 const iconSrc = resolveIconSrc(app.icon_url);
                 return (
                 <tr key={app.id}>
@@ -1142,7 +1171,11 @@ export default function Admin() {
                   </td>
                   <td style={styles.tableCell}>{app.name}</td>
                   <td style={{ ...styles.tableCell, ...styles.urlCell }}>{app.target_url}</td>
-                  <td style={styles.tableCell}>{app.target_bu_name || 'Global'}</td>
+                  <td style={styles.tableCell}>
+                    {Array.isArray(app.target_bu_names) && app.target_bu_names.length > 0
+                      ? app.target_bu_names.join(', ')
+                      : (app.target_bu_name || 'Global')}
+                  </td>
                   <td style={styles.actionsCell}>
                     <button type="button" className="btn-secondary" onClick={() => openEdit(app)}>Edit</button>
                     <button type="button" className="btn-danger" onClick={() => setDeleteConfirm(app)}>Delete</button>
@@ -1270,6 +1303,7 @@ const styles = {
   sidebarLinkActive: { padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-md)', background: 'var(--color-primary)', color: 'var(--color-primary-foreground)', textDecoration: 'none', fontSize: 'var(--text-small)', fontWeight: 'var(--font-weight-medium)' },
   main: { flex: 1, maxWidth: 900, margin: 0, padding: 'var(--space-4)', overflow: 'auto' },
   error: { padding: 'var(--space-3)', background: '#FEE2E2', color: 'var(--color-destructive)', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-small)' },
+  success: { padding: 'var(--space-3)', background: '#DCFCE7', color: '#166534', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-small)' },
   toolbar: { marginBottom: 'var(--space-4)', position: 'relative', zIndex: 1 },
   primaryBtn: {},
   form: { background: 'var(--color-bg-white)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-4)', boxShadow: 'var(--shadow-md)' },
@@ -1319,5 +1353,29 @@ const styles = {
     fontWeight: 700,
     fontSize: 11,
     fontFamily: 'var(--font-heading, system-ui, sans-serif)',
+  },
+  moreMenu: {
+    position: 'absolute',
+    top: 'calc(100% + 4px)',
+    right: 0,
+    zIndex: 50,
+    background: 'var(--color-bg-white)',
+    border: '1px solid var(--color-border-light)',
+    borderRadius: 'var(--radius-md)',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+    minWidth: 180,
+    padding: 'var(--space-1) 0',
+  },
+  moreMenuItem: {
+    display: 'block',
+    width: '100%',
+    padding: 'var(--space-2) var(--space-3)',
+    background: 'none',
+    border: 'none',
+    textAlign: 'left',
+    fontFamily: 'var(--font-primary)',
+    fontSize: 'var(--text-small)',
+    color: 'var(--color-text-charcoal)',
+    cursor: 'pointer',
   },
 };

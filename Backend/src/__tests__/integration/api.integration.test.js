@@ -543,4 +543,127 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(res.body.code).toBe('ACCOUNT_LOCKED');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Multi-BU Application visibility (migration 013)
+  // ---------------------------------------------------------------------------
+  describe('Applications — multi-BU visibility (TEST-PLAN §applications)', () => {
+    const runAppTest = hasDb ? test : test.skip;
+
+    let adminToken2;
+    let buAId;
+    let buBId;
+    let appGlobalId;
+    let appScopedId;
+    let userBuAToken;
+
+    beforeAll(async () => {
+      if (!hasDb) return;
+
+      // Re-use or re-establish an admin token
+      const adminEmail = `multibu-admin-${Date.now()}@example.com`;
+      const adminPass = 'AdminMultiBU1!';
+      let res = await request(app).post('/api/auth/register').send({ email: adminEmail, password: adminPass, password_retype: adminPass });
+      if (res.status !== 201) {
+        // Already exists — just login
+        res = await request(app).post('/api/auth/login').send({ email: adminEmail, password: adminPass });
+      }
+      adminToken2 = res.body.token;
+
+      // Create two BUs
+      const buARes = await request(app).post('/api/business-units').set('Authorization', `Bearer ${adminToken2}`).send({ name: `BU-A-${Date.now()}` });
+      const buBRes = await request(app).post('/api/business-units').set('Authorization', `Bearer ${adminToken2}`).send({ name: `BU-B-${Date.now()}` });
+      buAId = buARes.body?.business_unit?.id || buARes.body?.id;
+      buBId = buBRes.body?.business_unit?.id || buBRes.body?.id;
+
+      // Create a Global app (no BUs)
+      const globalAppRes = await request(app)
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${adminToken2}`)
+        .send({ name: `GlobalApp-${Date.now()}`, target_url: 'https://global.example.com', target_bu_ids: [] });
+      appGlobalId = globalAppRes.body?.id;
+
+      // Create a scoped app (BU-A only)
+      if (buAId) {
+        const scopedAppRes = await request(app)
+          .post('/api/applications')
+          .set('Authorization', `Bearer ${adminToken2}`)
+          .send({ name: `ScopedApp-${Date.now()}`, target_url: 'https://scoped.example.com', target_bu_ids: [buAId] });
+        appScopedId = scopedAppRes.body?.id;
+      }
+
+      // Create a user assigned to BU-A
+      if (buAId) {
+        const userEmail = `user-bua-${Date.now()}@example.com`;
+        const userPass = 'UserBuA1!';
+        const userRes = await request(app).post('/api/auth/register').send({ email: userEmail, password: userPass, password_retype: userPass });
+        const userId = userRes.body?.user?.id;
+        if (userId && adminToken2) {
+          await request(app).patch(`/api/users/${userId}`).set('Authorization', `Bearer ${adminToken2}`).send({ business_unit_id: buAId });
+        }
+        const loginRes = await request(app).post('/api/auth/login').send({ email: userEmail, password: userPass });
+        userBuAToken = loginRes.body?.token;
+      }
+    });
+
+    runAppTest('POST /api/applications — accepts target_bu_ids array', async () => {
+      if (!adminToken2 || !buAId) return;
+      const res = await request(app)
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${adminToken2}`)
+        .send({ name: `MultiApp-${Date.now()}`, target_url: 'https://multi.example.com', target_bu_ids: [buAId] });
+      expect(res.status).toBe(201);
+      expect(res.body.id).toBeDefined();
+    });
+
+    runAppTest('GET /api/applications/for-me — user in BU-A sees Global app', async () => {
+      if (!userBuAToken || !appGlobalId) return;
+      const res = await request(app).get('/api/applications/for-me').set('Authorization', `Bearer ${userBuAToken}`);
+      expect(res.status).toBe(200);
+      const ids = res.body.applications.map((a) => a.id);
+      expect(ids).toContain(appGlobalId);
+    });
+
+    runAppTest('GET /api/applications/for-me — user in BU-A sees scoped app targeted to BU-A', async () => {
+      if (!userBuAToken || !appScopedId) return;
+      const res = await request(app).get('/api/applications/for-me').set('Authorization', `Bearer ${userBuAToken}`);
+      expect(res.status).toBe(200);
+      const ids = res.body.applications.map((a) => a.id);
+      expect(ids).toContain(appScopedId);
+    });
+
+    runAppTest('GET /api/applications/for-me — user in BU-A does NOT see app scoped to BU-B only', async () => {
+      if (!adminToken2 || !buBId || !userBuAToken) return;
+      const scopedBRes = await request(app)
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${adminToken2}`)
+        .send({ name: `BuBOnly-${Date.now()}`, target_url: 'https://bub-only.example.com', target_bu_ids: [buBId] });
+      const buBOnlyId = scopedBRes.body?.id;
+      const res = await request(app).get('/api/applications/for-me').set('Authorization', `Bearer ${userBuAToken}`);
+      expect(res.status).toBe(200);
+      const ids = res.body.applications.map((a) => a.id);
+      expect(ids).not.toContain(buBOnlyId);
+    });
+
+    runAppTest('GET /api/applications?bu=<id>&global=true — admin filter returns matching apps', async () => {
+      if (!adminToken2 || !buAId || !appGlobalId || !appScopedId) return;
+      const res = await request(app)
+        .get(`/api/applications?bu=${buAId}&global=true`)
+        .set('Authorization', `Bearer ${adminToken2}`);
+      expect(res.status).toBe(200);
+      const ids = res.body.applications.map((a) => a.id);
+      expect(ids).toContain(appGlobalId);
+      expect(ids).toContain(appScopedId);
+    });
+
+    runAppTest('GET /api/applications — admin list includes target_bu_ids array', async () => {
+      if (!adminToken2 || !appScopedId || !buAId) return;
+      const res = await request(app).get('/api/applications').set('Authorization', `Bearer ${adminToken2}`);
+      expect(res.status).toBe(200);
+      const scoped = res.body.applications.find((a) => a.id === appScopedId);
+      expect(scoped).toBeDefined();
+      expect(Array.isArray(scoped.target_bu_ids)).toBe(true);
+      expect(scoped.target_bu_ids).toContain(buAId);
+    });
+  });
 });

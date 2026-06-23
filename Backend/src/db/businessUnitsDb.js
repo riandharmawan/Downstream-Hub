@@ -44,7 +44,10 @@ async function softDelete(db, id) {
 /** Clear user and app references to this BU (before or after soft-delete). */
 async function clearUserAndAppReferences(db, buId) {
   await db.query('UPDATE users SET business_unit_id = NULL WHERE business_unit_id = $1', [buId]);
+  // Clear legacy single-BU FK
   await db.query('UPDATE applications SET target_bu_id = NULL WHERE target_bu_id = $1', [buId]);
+  // Clear junction table rows (ON DELETE CASCADE also handles this, but explicit for clarity)
+  await db.query('DELETE FROM application_business_units WHERE business_unit_id = $1', [buId]);
 }
 
 module.exports = {

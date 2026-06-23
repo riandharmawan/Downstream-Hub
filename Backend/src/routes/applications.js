@@ -69,8 +69,15 @@ function isValidIconUrl(s) {
   return false;
 }
 
+/**
+ * Validate and normalise the application request body.
+ * Accepts either:
+ *   target_bu_ids: string[]  (new, multi-BU)
+ *   target_bu_id: string     (legacy single-BU — coerced into target_bu_ids)
+ * Returns { error } on validation failure, otherwise cleaned payload with target_bu_ids.
+ */
 function validateAppBody(body) {
-  const { name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode } = body || {};
+  const { name, description, icon_url, target_url, target_bu_id, target_bu_ids, oauth_client_id, oidc_redirect_uris, sso_mode } = body || {};
   if (!name || typeof name !== 'string' || !name.trim()) return { error: 'Name is required' };
   if (!target_url || typeof target_url !== 'string' || !target_url.trim()) return { error: 'Target URL is required' };
   if (!URL_REGEX.test(target_url.trim())) return { error: 'Target URL must be a valid http(s) URL' };
@@ -88,13 +95,29 @@ function validateAppBody(body) {
       if (!URL_REGEX.test(uri)) return { error: `Invalid oidc_redirect_uri: ${uri}` };
     }
   }
-  const buId = target_bu_id === null || target_bu_id === undefined || target_bu_id === '' ? null : target_bu_id;
+
+  // Resolve BU IDs — prefer target_bu_ids array; fall back to legacy target_bu_id scalar
+  let resolvedBuIds;
+  if (Array.isArray(target_bu_ids)) {
+    resolvedBuIds = target_bu_ids.map((id) => String(id).trim()).filter(Boolean);
+  } else if (target_bu_id !== null && target_bu_id !== undefined && target_bu_id !== '') {
+    resolvedBuIds = [String(target_bu_id).trim()];
+  } else {
+    resolvedBuIds = [];
+  }
+  // Deduplicate
+  resolvedBuIds = [...new Set(resolvedBuIds)];
+
+  // Legacy compat: expose first BU as target_bu_id for existing DB column writes
+  const legacyBuId = resolvedBuIds.length > 0 ? resolvedBuIds[0] : null;
+
   return {
     name: name.trim(),
     description: description != null ? String(description).trim() : '',
     icon_url: iconTrim,
     target_url: target_url.trim(),
-    target_bu_id: buId,
+    target_bu_id: legacyBuId,
+    target_bu_ids: resolvedBuIds,
     oauth_client_id: clientId || null,
     oidc_redirect_uris: redirectUris,
     sso_mode: mode,
@@ -141,9 +164,17 @@ router.get('/for-me', authMiddleware, async (req, res) => {
 });
 
 // GET /api/applications — list all (authenticated; Admin uses for full catalog)
+// Optional filter params: ?bu=<uuid>,<uuid>&global=true
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const rows = await applicationsDb.listAllWithBuName(pool);
+    const buParam = req.query.bu ? String(req.query.bu) : '';
+    const buIds = buParam ? buParam.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    const includeGlobal = req.query.global === 'true' || req.query.global === '1';
+
+    const rows = (buIds.length > 0 || includeGlobal)
+      ? await applicationsDb.listAllWithBuNameFiltered(pool, buIds, includeGlobal)
+      : await applicationsDb.listAllWithBuName(pool);
+
     res.json({ applications: rows });
   } catch (err) {
     console.error('List applications error:', err);
@@ -167,22 +198,24 @@ router.get('/:id', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, requireAdmin, async (req, res) => {
   const validated = validateAppBody(req.body);
   if (validated.error) return res.status(400).json({ error: validated.error });
-  if (validated.target_bu_id) {
-    const bu = await businessUnitsDb.getById(pool, validated.target_bu_id);
-    if (!bu) return res.status(400).json({ error: 'Business unit not found' });
+  // Validate each BU ID exists
+  for (const buId of validated.target_bu_ids) {
+    const bu = await businessUnitsDb.getById(pool, buId);
+    if (!bu) return res.status(400).json({ error: `Business unit not found: ${buId}` });
   }
   const client = await pool.connect();
   try {
     const app = await applicationsDb.create(client, validated);
+    await applicationsDb.setApplicationBusinessUnits(client, app.id, validated.target_bu_ids);
     await auditLog(client, {
       actorId: req.user.id,
       actionType: 'CREATE',
       targetEntity: app.name,
       payloadBefore: null,
-      payloadAfter: app,
+      payloadAfter: { ...app, target_bu_ids: validated.target_bu_ids },
       ipAddress: getClientIp(req),
     });
-    res.status(201).json(app);
+    res.status(201).json({ ...app, target_bu_ids: validated.target_bu_ids });
   } catch (err) {
     console.error('Create application error:', err);
     res.status(500).json({ error: 'Failed to create application' });
@@ -195,9 +228,10 @@ router.post('/', authMiddleware, requireAdmin, async (req, res) => {
 router.put('/:id', authMiddleware, requireAdmin, async (req, res) => {
   const validated = validateAppBody(req.body);
   if (validated.error) return res.status(400).json({ error: validated.error });
-  if (validated.target_bu_id) {
-    const bu = await businessUnitsDb.getById(pool, validated.target_bu_id);
-    if (!bu) return res.status(400).json({ error: 'Business unit not found' });
+  // Validate each BU ID exists
+  for (const buId of validated.target_bu_ids) {
+    const bu = await businessUnitsDb.getById(pool, buId);
+    if (!bu) return res.status(400).json({ error: `Business unit not found: ${buId}` });
   }
   const client = await pool.connect();
   try {
@@ -207,15 +241,16 @@ router.put('/:id', authMiddleware, requireAdmin, async (req, res) => {
       return;
     }
     const app = await applicationsDb.update(client, req.params.id, validated);
+    await applicationsDb.setApplicationBusinessUnits(client, req.params.id, validated.target_bu_ids);
     await auditLog(client, {
       actorId: req.user.id,
       actionType: 'UPDATE',
       targetEntity: app.name,
       payloadBefore: before,
-      payloadAfter: app,
+      payloadAfter: { ...app, target_bu_ids: validated.target_bu_ids },
       ipAddress: getClientIp(req),
     });
-    res.json(app);
+    res.json({ ...app, target_bu_ids: validated.target_bu_ids });
   } catch (err) {
     console.error('Update application error:', err);
     res.status(500).json({ error: 'Failed to update application' });
