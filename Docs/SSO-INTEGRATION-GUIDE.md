@@ -1,6 +1,10 @@
 # Downstream Hub SSO Integration Guide (Strict OIDC Mode)
 
-This guide is the current contract for downstream applications.
+**Start here.** This is the single integration contract for all downstream applications (including Jetty Planning System and any new app).
+
+- **Implement from this document** — OIDC endpoints, PKCE, token validation, app registration, and SSO v2 silent upsert (§4).
+- **Background only:** [SSO v2 – Centralized Verification.md](./SSO%20v2%20%E2%80%93%20Centralized%20Verification.md) explains the product strategy; its rules are normative in **§4** below.
+- **JPS-specific debugging:** [SSO-OIDC-JPS-DEBUG-HANDOFF.md](./SSO-OIDC-JPS-DEBUG-HANDOFF.md) (nginx blank-page issues, etc.).
 
 Legacy bridge POST (`/api/sso/bridge`) and HS256 shared-secret integration are no longer the target path in strict mode.
 
@@ -10,12 +14,14 @@ Legacy bridge POST (`/api/sso/bridge`) and HS256 shared-secret integration are n
 
 Downstream Hub acts as OIDC provider:
 
-1. User clicks app in Hub dashboard.
+1. User logs into Hub and clicks your app on the dashboard (Hub-initiated launch).
 2. Hub starts authorization code flow with PKCE.
-3. Your app receives `code` (and `state`) on registered redirect URI.
+3. Your app receives `code` and `state` on your registered redirect URI. Hub may also append `code_verifier` in the query string (dashboard handoff helper — read it from the callback or from server-side session storage).
 4. Your app calls Hub token endpoint to exchange `code` + `code_verifier`.
 5. Your app validates returned `id_token` using Hub JWKS.
-6. Your app creates local session and redirects user to app home.
+6. Your app runs silent user upsert (§4), creates a local session, and redirects to app home.
+
+Hub uses a **public OIDC client** model: no client secret; PKCE is required (`token_endpoint_auth_methods_supported: none`).
 
 ---
 
@@ -28,9 +34,14 @@ Use these endpoints from Hub:
 - Token: `POST /api/sso/token`
 - JWKS: `GET /api/sso/jwks`
 
-Example (local):
+Examples:
 
-- `http://localhost:4000/api/sso/.well-known/openid-configuration`
+| Environment | Discovery URL |
+|-------------|---------------|
+| Local dev | `http://localhost:4000/api/sso/.well-known/openid-configuration` |
+| Staging | `http://172.28.92.56:3010/api/sso/.well-known/openid-configuration` |
+
+On staging, all OIDC traffic uses the **same public origin** (`172.28.92.56:3010`). Nginx proxies `/api/` to the backend; downstream apps must **not** call `172.28.92.57:4000` from the browser. See **§12**.
 
 ---
 
@@ -109,13 +120,18 @@ For local/staging convenience only, operators may set `OIDC_EMAIL_VERIFIED_TRUST
 
 ## 5) App registration required in Hub
 
-In Hub Admin -> Applications, each app must have:
+Open **Hub Admin → Applications** (staging: `http://172.28.92.56:3010/admin`) and configure each target app:
 
-- `sso_mode = oidc`
-- `oauth_client_id` set
-- `oidc_redirect_uris` set (exact allowed callback URLs)
+| Field | Requirement |
+|-------|-------------|
+| SSO Mode | `oidc` |
+| OAuth Client ID | Unique string, e.g. `my-app-staging` |
+| OIDC Redirect URIs | One line per exact callback URL (scheme, host, port, path must match) |
+| Target URL | Your app's public base URL |
 
-If these are missing, Hub blocks launch in strict mode.
+Example (JPS on staging): client id `jps-local`, redirect URI `http://172.28.92.56:3080/auth/oidc/callback`.
+
+If OIDC fields are missing, Hub blocks launch in strict mode.
 
 ---
 
@@ -152,12 +168,25 @@ The `id_token` JWT includes standard claims such as `sub`, `email`, `name`, and 
 
 ## 7) Migration checklist for downstream apps
 
-1. Add OIDC callback endpoint (`redirect_uri`) in your app.
-2. Store and verify PKCE `code_verifier` per login attempt.
-3. Exchange `code` at Hub token endpoint.
-4. Validate `id_token` via Hub JWKS.
-5. Use `sub` for user upsert/mapping; enforce **`email_verified`** if you adopt SSO v2 silent linking (§4).
-6. Remove dependency on legacy `/auth/hub` bridge POST path.
+1. Register the app in Hub Admin (§5).
+2. Add a **public** OIDC callback route (`redirect_uri`) on your backend — not a React/SPA route.
+3. If you use nginx in front of a SPA, proxy `/auth/` (or your callback prefix) to the backend before SPA fallback (see JPS handoff doc).
+4. Store and verify PKCE `code_verifier` per login attempt (Hub may pass it on the callback query string).
+5. Exchange `code` at Hub token endpoint (§6).
+6. Validate `id_token` via Hub JWKS (§3).
+7. Implement silent upsert (§4); enforce **`email_verified`** before email-based link or JIT.
+8. Remove dependency on legacy `/auth/hub` bridge POST path.
+
+### Target app environment variables (example)
+
+```env
+OIDC_ISSUER=http://172.28.92.56:3010
+OIDC_CLIENT_ID=my-app-staging
+OIDC_REDIRECT_URI=http://172.28.92.56:YOUR_PORT/auth/oidc/callback
+# No client secret — public client + PKCE
+```
+
+Use discovery to confirm `issuer` and endpoint URLs match your `OIDC_ISSUER`.
 
 ---
 
@@ -185,19 +214,38 @@ The `id_token` JWT includes standard claims such as `sub`, `email`, `name`, and 
 - `email_verified` is always `false` in your app
   - User must complete Hub magic-link verification (§4). Check Hub user state and that you are not using `OIDC_EMAIL_VERIFIED_TRUST_ALL` in production.
 
+- Blank page on OIDC callback (SPA app)
+  - Nginx is serving `index.html` instead of proxying the callback path to your backend. See [SSO-OIDC-JPS-DEBUG-HANDOFF.md](./SSO-OIDC-JPS-DEBUG-HANDOFF.md).
+
+- Discovery `issuer` or endpoints show wrong host (e.g. `172.28.92.57:4000`)
+  - Hub operator must set `SSO_ISSUER` and `API_PUBLIC_URL` to the public URL integrators use (staging: `http://172.28.92.56:3010`).
+
 ---
 
 ## 10) Quick runtime checks
 
+Local:
+
 ```bash
 curl -i http://localhost:4000/api/sso/jwks
 curl -i http://localhost:4000/api/sso/.well-known/openid-configuration
+curl -i http://localhost:4000/api/sso/bridge
+```
+
+Staging:
+
+```bash
+curl -i http://172.28.92.56:3010/api/sso/jwks
+curl -i http://172.28.92.56:3010/api/sso/.well-known/openid-configuration
+curl -i http://172.28.92.56:3010/api/sso/bridge
 ```
 
 If strict mode is active:
 
 - `/api/sso/bridge` returns `410`
 - OIDC discovery and JWKS endpoints return `200`
+
+On staging, discovery should report `"issuer": "http://172.28.92.56:3010"` and endpoints under the same host.
 
 ---
 
@@ -229,3 +277,64 @@ Auto-link helper endpoints (email verification perimeter):
 - `GET /api/auth/oidc/auto-link/verify?token=...`
 
 See **§4** for how **target applications** should map **`id_token`** claims to local users (silent upsert), separately from these Hub APIs.
+
+---
+
+## 12) Staging environment (`172.28.92.56:3010`)
+
+Staging uses **proxy mode**: browsers talk to one origin; Nginx on `.56` forwards `/api/` to the backend on `.57:4000`. Integrators and Hub operators must both use the public URL below.
+
+### Hub URLs (integrators)
+
+| Purpose | URL |
+|---------|-----|
+| Hub login | `http://172.28.92.56:3010/login` |
+| Hub dashboard | `http://172.28.92.56:3010/` |
+| Hub Admin (register apps) | `http://172.28.92.56:3010/admin` |
+| OIDC discovery | `http://172.28.92.56:3010/api/sso/.well-known/openid-configuration` |
+| Authorization | `http://172.28.92.56:3010/api/sso/authorize` |
+| Token | `http://172.28.92.56:3010/api/sso/token` |
+| JWKS | `http://172.28.92.56:3010/api/sso/jwks` |
+| Expected `iss` in `id_token` | `http://172.28.92.56:3010` |
+
+### Hub operator requirements
+
+On the backend server, set in `Backend/.env`:
+
+```env
+SSO_ISSUER=http://172.28.92.56:3010
+API_PUBLIC_URL=http://172.28.92.56:3010
+PUBLIC_APP_URL=http://172.28.92.56:3010
+```
+
+Rebuild/restart the API after changing these. If discovery shows `172.28.92.57:4000`, downstream token validation will fail `iss` checks.
+
+Frontend must be built with `VITE_API_URL=http://172.28.92.56:3010`. See [Guide/STAGING-PROXY-SERVER-CONFIG.md](./Guide/STAGING-PROXY-SERVER-CONFIG.md).
+
+### End-to-end test
+
+1. Log in at `http://172.28.92.56:3010/login`.
+2. Confirm DevTools Network shows API calls to `.56:3010/api/...` (not `.57:4000`).
+3. Register your app in Admin (§5) with exact redirect URI(s).
+4. Click the app on the dashboard → callback on your app → token exchange → session created.
+5. If blocked with email verification, complete Hub magic link (§4), then retry.
+
+### Node.js verification example (staging)
+
+```js
+import { createRemoteJWKSet, jwtVerify } from 'jose';
+
+const ISSUER = 'http://172.28.92.56:3010';
+const CLIENT_ID = process.env.OIDC_CLIENT_ID;
+const JWKS = createRemoteJWKSet(new URL(`${ISSUER}/api/sso/jwks`));
+
+export async function verifyIdToken(idToken) {
+  const { payload } = await jwtVerify(idToken, JWKS, {
+    issuer: ISSUER,
+    audience: CLIENT_ID,
+  });
+  if (!payload.sub) throw new Error('Missing sub');
+  if (payload.email_verified !== true) throw new Error('Email not verified for SSO');
+  return payload;
+}
+```

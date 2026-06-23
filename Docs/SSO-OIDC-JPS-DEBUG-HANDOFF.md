@@ -1,13 +1,16 @@
 # SSO / OIDC Debug Handoff — Jetty Planning System (JPS)
 
-**Date:** 2026-06-18  
+**Date:** 2026-06-18 (updated 2026-06-22)  
 **Environment:** `172.28.92.56`  
-**Hub frontend:** `:3100`  
+**Hub (public):** `http://172.28.92.56:3010` (Nginx proxy; login at `/login`)  
+**Hub container (internal):** `:3100`  
 **JPS frontend (nginx):** `:3080`  
 **JPS backend (likely):** `:3081`  
 **Status:** Hub login and OIDC authorization succeed; JPS callback fails with blank page.
 
-Use this document when working with the JPS team (or JPS Cursor agent) to fix the downstream application side of SSO.
+**Integration contract (all apps, including JPS):** [SSO-INTEGRATION-GUIDE.md](./SSO-INTEGRATION-GUIDE.md) — especially §4 (SSO v2 silent upsert) and §12 (staging URLs).
+
+Use this document when working with the JPS team (or JPS Cursor agent) to fix the **JPS-specific** downstream side of SSO (nginx, callback routing, env alignment).
 
 ---
 
@@ -35,7 +38,18 @@ Use this document when working with the JPS team (or JPS Cursor agent) to fix th
 | OAuth Client ID | `jps-local` |
 | OIDC Redirect URI | `http://172.28.92.56:3080/auth/oidc/callback` |
 
-> **Note:** The Hub codebase in this repo implements the **JWT bridge** flow (`POST /auth/hub`). The deployed Hub at `:3100` also supports **OIDC (strict)** mode for this app. JPS must implement the OIDC consumer endpoints described below.
+### Hub OIDC endpoints (staging)
+
+All Hub OIDC calls use the public proxy origin — same as every other downstream app:
+
+| Endpoint | URL |
+|----------|-----|
+| Issuer / `iss` | `http://172.28.92.56:3010` |
+| Discovery | `http://172.28.92.56:3010/api/sso/.well-known/openid-configuration` |
+| Token | `http://172.28.92.56:3010/api/sso/token` |
+| JWKS | `http://172.28.92.56:3010/api/sso/jwks` |
+
+> **Note:** JPS must implement the OIDC consumer flow in [SSO-INTEGRATION-GUIDE.md](./SSO-INTEGRATION-GUIDE.md). Legacy JWT bridge (`POST /auth/hub`) is not the target path in strict OIDC mode.
 
 ---
 
@@ -70,7 +84,6 @@ The authorization step **is working** — the browser receives a valid `code` in
 |---|---|---|
 | `GET /auth/oidc/callback` | Returns SPA `index.html` (763 bytes) | Proxy to JPS backend; backend exchanges code and redirects |
 | `GET /auth/oidc/start` | Returns SPA `index.html` | Proxy to JPS backend; backend redirects to Hub authorize URL |
-| `POST /auth/hub` | `405 Not Allowed` (nginx) | Proxy to JPS backend (needed if using JWT bridge mode) |
 | `GET/POST /api/v1/*` | Proxied to Express backend | Already working |
 
 Because nginx serves the React SPA for `/auth/oidc/callback`, and the SPA has **no React route** for that path, the page renders blank with no errors.
@@ -96,20 +109,7 @@ Server: nginx/1.29.5
 
 Body is the JPS React `index.html`, not a redirect or JSON from the backend.
 
-### 2. Auth POST blocked by nginx
-
-```bash
-curl -X POST "http://172.28.92.56:3080/auth/hub" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data "token=fake"
-```
-
-```
-HTTP/1.1 405 Not Allowed
-Server: nginx/1.29.5
-```
-
-### 3. API routes reach backend (for comparison)
+### 2. API routes reach backend (for comparison)
 
 ```bash
 curl "http://172.28.92.56:3080/api/v1/auth/oidc/callback?code=test&state=test"
@@ -127,7 +127,7 @@ This confirms:
 - The backend has OIDC-related routes, but `/auth/oidc/callback` under `/api/v1` returns 401 — likely blocked by auth middleware when it should be public.
 - The registered Hub redirect URI is `/auth/oidc/callback` (no `/api/v1` prefix), so the nginx proxy fix is required.
 
-### 4. JPS backend likely on port 3081
+### 3. JPS backend likely on port 3081
 
 ```bash
 curl -I "http://172.28.92.56:3081/auth/oidc/start"
@@ -140,7 +140,7 @@ location: /login?message=please-login
 
 Port 3081 responds as an application server (not static nginx). Use this as the upstream for the nginx proxy on 3080.
 
-### 5. JPS frontend bundle analysis
+### 4. JPS frontend bundle analysis
 
 From `http://172.28.92.56:3080/assets/index-*.js`:
 
@@ -194,23 +194,18 @@ If auth middleware wraps all `/auth/*` or `/api/v1/auth/*` routes, exclude `/aut
 
 ### Fix 3 — Environment alignment
 
-Confirm JPS backend env matches Hub admin settings:
+Confirm JPS backend env matches Hub admin settings and [SSO-INTEGRATION-GUIDE.md §12](./SSO-INTEGRATION-GUIDE.md#12-staging-environment-1722892563010):
 
 | Variable | Expected value |
 |---|---|
 | OIDC client ID | `jps-local` |
 | OIDC redirect URI | `http://172.28.92.56:3080/auth/oidc/callback` |
-| Hub issuer / authorize URL | As configured in Hub OIDC provider |
-| Hub token URL | As configured in Hub OIDC provider |
-| Client secret | Shared with Hub (if confidential client) |
+| Hub issuer (`iss`) | `http://172.28.92.56:3010` |
+| Hub token URL | `http://172.28.92.56:3010/api/sso/token` |
+| Hub JWKS URL | `http://172.28.92.56:3010/api/sso/jwks` |
+| Client secret | **None** — public client; PKCE required |
 
-### Fix 4 (optional) — JWT bridge mode alternative
-
-If OIDC proves difficult, Hub also supports **JWT bridge** mode per [SSO-INTEGRATION-GUIDE.md](./SSO-INTEGRATION-GUIDE.md):
-
-- Hub POSTs a short-lived JWT to `POST /auth/hub` on the target app.
-- JPS must implement `POST /auth/hub` and share `SSO_TOKEN_SECRET` with Hub.
-- The same nginx `/auth/` proxy is still required (`POST /auth/hub` currently returns 405).
+Implement silent upsert and `email_verified` gate per integration guide §4.
 
 ---
 
@@ -223,19 +218,13 @@ Run these after nginx reload and backend changes:
 curl -I "http://172.28.92.56:3080/auth/oidc/callback?code=test&state=test"
 # Expect: 302 redirect, 400, or 401 from backend — NOT 200 text/html (763 bytes)
 
-# 2. Auth hub endpoint should reach backend
-curl -X POST "http://172.28.92.56:3080/auth/hub" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data "token=fake"
-# Expect: 400 or 401 from backend — NOT 405 from nginx
-
-# 3. OIDC start should redirect to Hub (not return SPA)
+# 2. OIDC start should redirect to Hub (not return SPA)
 curl -I "http://172.28.92.56:3080/auth/oidc/start"
 # Expect: 302 to Hub authorize URL — NOT 200 text/html
 ```
 
 Then test end-to-end:
-1. Log into Hub at `http://172.28.92.56:3100`
+1. Log into Hub at `http://172.28.92.56:3010/login`
 2. Click Jetty Planning System on dashboard
 3. Should land on JPS dashboard with an active session (not blank callback page)
 
@@ -249,7 +238,7 @@ The live callback URL includes `code_verifier` as a query parameter:
 /auth/oidc/callback?code=...&state=...&code_verifier=...
 ```
 
-In standard OAuth2 PKCE, the authorization server returns only `code` and `state`. The `code_verifier` is kept client-side and sent only to the token endpoint. If Hub is echoing `code_verifier` in the redirect, verify whether JPS or Hub put it there. This may need a separate Hub-side review after the nginx fix is in place.
+In standard OAuth2 PKCE, the authorization server returns only `code` and `state`. **Hub intentionally appends `code_verifier`** on dashboard-initiated launches (transitional helper in `Backend/src/routes/sso.js`) so target apps can complete the token exchange without storing the verifier server-side. JPS should read `code_verifier` from the callback query string when present.
 
 ---
 
@@ -299,9 +288,12 @@ Ensure the OIDC provider derives `email_verified` from `email_verified_at`. The 
 Fix Downstream Hub OIDC SSO callback for Jetty Planning System.
 
 Context:
-- Hub redirects to GET http://172.28.92.56:3080/auth/oidc/callback?code=...&state=...
+- Hub login: http://172.28.92.56:3010/login
+- Hub OIDC issuer: http://172.28.92.56:3010
+- Hub redirects to GET http://172.28.92.56:3080/auth/oidc/callback?code=...&state=...&code_verifier=...
 - Page is blank because nginx on :3080 serves SPA index.html for /auth/* instead of proxying to backend.
 - JPS backend likely runs on :3081. /api/v1/* is already proxied correctly.
+- Follow SSO-INTEGRATION-GUIDE.md (§4 silent upsert, §12 staging URLs).
 
 Tasks:
 1) Update nginx on port 3080 to proxy location /auth/ to the JPS backend (e.g. http://127.0.0.1:3081/auth/).
@@ -312,7 +304,9 @@ Tasks:
    - redirects to dashboard
 3) Ensure GET /auth/oidc/start redirects to Hub OIDC authorize URL.
 4) Exclude /auth/oidc/callback and /auth/oidc/start from auth middleware.
-5) Verify env: client_id=jps-local, redirect_uri=http://172.28.92.56:3080/auth/oidc/callback.
+5) Verify env: issuer=http://172.28.92.56:3010, client_id=jps-local, redirect_uri=http://172.28.92.56:3080/auth/oidc/callback, no client secret (PKCE).
+6) Read code_verifier from callback query when Hub sends it; exchange at http://172.28.92.56:3010/api/sso/token.
+7) Enforce email_verified per integration guide §4.
 
 Validation:
 - curl -I http://172.28.92.56:3080/auth/oidc/callback?code=test&state=test must NOT return SPA HTML (763 bytes).
@@ -323,5 +317,7 @@ Validation:
 
 ## Related Hub Documentation
 
-- [SSO-INTEGRATION-GUIDE.md](./SSO-INTEGRATION-GUIDE.md) — JWT bridge contract (`POST /auth/hub`)
+- [SSO-INTEGRATION-GUIDE.md](./SSO-INTEGRATION-GUIDE.md) — **Primary integration contract** (OIDC strict mode, SSO v2, staging §12)
+- [SSO v2 – Centralized Verification.md](./SSO%20v2%20%E2%80%93%20Centralized%20Verification.md) — Product/strategy background (rules are in integration guide §4)
 - [TEST-PLAN.md](./TEST-PLAN.md) — Hub-side SSO test cases
+- [Guide/STAGING-PROXY-SERVER-CONFIG.md](./Guide/STAGING-PROXY-SERVER-CONFIG.md) — Hub operator staging proxy setup

@@ -1,5 +1,7 @@
 # SSO v2 – Centralized Verification Model
 
+> **For downstream app developers:** implement from [SSO-INTEGRATION-GUIDE.md](./SSO-INTEGRATION-GUIDE.md) (§4 is the developer contract for this model). This document explains the **strategy and UX goals** only.
+
 ## High-Level Strategy: Centralized Verification
 
 The core of this "seamless" model is that the SSO Hub acts as the gatekeeper for identity verification. Once the Hub verifies a user via a Magic Link, all downstream applications trust that verification and perform **Silent Provisioning** or **Automatic Linking**.
@@ -70,7 +72,7 @@ The target app receives the token and performs a "silent" check:
 
 ## 3. Developer Contract: Updated Requirements
 
-To support this seamless flow, the **SSO-INTEGRATION-GUIDE** for downstream developers must be updated with the following rules:
+The rules below are **normative in [SSO-INTEGRATION-GUIDE.md §4](./SSO-INTEGRATION-GUIDE.md#4-sso-v2--centralized-verification-and-silent-account-linking)**. This section summarizes them for product readers.
 
 ### A. The "Silent Upsert" Policy
 
