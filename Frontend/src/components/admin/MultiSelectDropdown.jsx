@@ -133,7 +133,7 @@ export default function MultiSelectDropdown({
             position: 'absolute',
             top: 'calc(100% + 4px)',
             left: 0,
-            zIndex: 100,
+            zIndex: 300,
             background: 'var(--color-bg-white)',
             border: '1px solid var(--color-border-light)',
             borderRadius: 'var(--radius-md)',

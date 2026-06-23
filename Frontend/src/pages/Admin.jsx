@@ -6,6 +6,7 @@ import { applicationInitials } from '../utils/applicationInitials';
 import { resolveIconSrc } from '../utils/resolveIconSrc';
 import MultiSelectDropdown from '../components/admin/MultiSelectDropdown';
 import AdminModal from '../components/admin/AdminModal';
+import AdminFormModal from '../components/admin/AdminFormModal';
 
 const SECTIONS = [
   { id: 'domains', label: 'Domains', path: 'domains' },
@@ -157,7 +158,7 @@ export default function Admin() {
       })
       .catch(() => setPasswordExpiryDays(0))
       .finally(() => setPolicyLoading(false));
-  }, [token, user?.role]);
+  }, [token, user?.role, activeSection]);
 
   // Sync application filter state → URL params (only while on applications section)
   useEffect(() => {
@@ -286,6 +287,12 @@ export default function Admin() {
     setShowDomainForm(true);
   }
 
+  function closeDomainForm() {
+    setShowDomainForm(false);
+    setEditingDomain(null);
+    setDomainForm({ domain: '' });
+  }
+
   async function handleSaveDomain(e) {
     e.preventDefault();
     setError('');
@@ -309,9 +316,7 @@ export default function Admin() {
         }, token);
       }
       await loadDomains();
-      setShowDomainForm(false);
-      setEditingDomain(null);
-      setDomainForm({ domain: '' });
+      closeDomainForm();
     } catch (err) {
       setError(err.error || 'Save failed');
     } finally {
@@ -350,6 +355,12 @@ export default function Admin() {
     setShowBuForm(true);
   }
 
+  function closeBuForm() {
+    setShowBuForm(false);
+    setEditingBu(null);
+    setBuForm({ name: '' });
+  }
+
   async function handleSaveBu(e) {
     e.preventDefault();
     setError('');
@@ -367,9 +378,7 @@ export default function Admin() {
         await apiRequest('/api/business-units', { method: 'POST', body: JSON.stringify({ name }) }, token);
       }
       await loadBusinessUnits();
-      setShowBuForm(false);
-      setEditingBu(null);
-      setBuForm({ name: '' });
+      closeBuForm();
     } catch (err) {
       setError(err.error || 'Save failed');
     } finally {
@@ -427,6 +436,17 @@ export default function Admin() {
     setError('');
   }
 
+  function closeAddUserForm() {
+    setShowAddUserForm(false);
+    setError('');
+  }
+
+  function closeAppForm() {
+    setEditing(null);
+    setShowForm(false);
+    setForm(emptyForm);
+  }
+
   async function handleAddUser(e) {
     e.preventDefault();
     setError('');
@@ -443,8 +463,9 @@ export default function Admin() {
         }),
       }, token);
       await loadUsers();
-      setShowAddUserForm(false);
       setAddUserForm({ email: '', password: '', password_retype: '', role: 'Employee', business_unit_id: '' });
+      closeAddUserForm();
+      setSuccessMessage('User created.');
     } catch (err) {
       setError(err.error || 'Create failed');
     } finally {
@@ -577,10 +598,9 @@ export default function Admin() {
       }
       const data = await apiRequest('/api/applications', {}, token);
       setApplications(data.applications || []);
-      setEditing(null);
-      setShowForm(false);
-      setForm(emptyForm);
-      setSuccessMessage(editing ? 'Application updated.' : 'Application created.');
+      const wasEditing = !!editing;
+      closeAppForm();
+      setSuccessMessage(wasEditing ? 'Application updated.' : 'Application created.');
     } catch (err) {
       setError(err.error || 'Save failed');
     } finally {
@@ -649,21 +669,24 @@ export default function Admin() {
           <div style={styles.toolbar}>
             <button type="button" className="btn-secondary" onClick={openAddDomain}>Add domain</button>
           </div>
-          {showDomainForm && (
-            <form onSubmit={handleSaveDomain} style={styles.form}>
-              <input
-                placeholder="Domain (e.g. example.com)"
-                value={domainForm.domain}
-                onChange={(e) => setDomainForm((f) => ({ ...f, domain: e.target.value }))}
-                required
-                style={styles.input}
-              />
-              <div style={styles.formActions}>
-                <button type="submit" className="btn-primary" disabled={domainSaving}>{domainSaving ? 'Saving…' : 'Save'}</button>
-                <button type="button" className="btn-secondary" onClick={() => { setShowDomainForm(false); setEditingDomain(null); setDomainForm({ domain: '' }); }}>Cancel</button>
-              </div>
-            </form>
-          )}
+          <AdminFormModal
+            open={showDomainForm}
+            title={editingDomain ? 'Edit domain' : 'Add domain'}
+            size="sm"
+            onClose={closeDomainForm}
+            onSubmit={handleSaveDomain}
+            saving={domainSaving}
+            savingLabel="Saving…"
+          >
+            <input
+              placeholder="Domain (e.g. example.com)"
+              value={domainForm.domain}
+              onChange={(e) => setDomainForm((f) => ({ ...f, domain: e.target.value }))}
+              required
+              style={styles.modalInput}
+              autoFocus
+            />
+          </AdminFormModal>
           {domainsLoading ? (
             <p>Loading…</p>
           ) : (
@@ -688,15 +711,20 @@ export default function Admin() {
             </table>
           )}
           {domainDeleteConfirm && (
-            <div style={styles.modal}>
-              <div style={styles.modalContent}>
-                <p>Remove domain &quot;{domainDeleteConfirm.domain}&quot;? New registrations from this domain will be blocked. You cannot delete the last domain.</p>
-                <div style={styles.modalActions}>
-                  <button type="button" className="btn-danger" onClick={() => handleDeleteDomain(domainDeleteConfirm)} disabled={domainSaving}>{domainSaving ? 'Deleting…' : 'Delete'}</button>
+            <AdminModal
+              onClose={() => setDomainDeleteConfirm(null)}
+              disableClose={domainSaving}
+              footer={
+                <div style={styles.modalFooterActions}>
+                  <button type="button" className="btn-danger" onClick={() => handleDeleteDomain(domainDeleteConfirm)} disabled={domainSaving}>
+                    {domainSaving ? 'Deleting…' : 'Delete'}
+                  </button>
                   <button type="button" className="btn-secondary" onClick={() => setDomainDeleteConfirm(null)}>Cancel</button>
                 </div>
-              </div>
-            </div>
+              }
+            >
+              <p>Remove domain &quot;{domainDeleteConfirm.domain}&quot;? New registrations from this domain will be blocked. You cannot delete the last domain.</p>
+            </AdminModal>
           )}
         </section>
           )}
@@ -708,21 +736,24 @@ export default function Admin() {
           <div style={styles.toolbar}>
             <button type="button" className="btn-secondary" onClick={openAddBu}>Add business unit</button>
           </div>
-          {showBuForm && (
-            <form onSubmit={handleSaveBu} style={styles.form}>
-              <input
-                placeholder="Name (e.g. Engineering)"
-                value={buForm.name}
-                onChange={(e) => setBuForm((f) => ({ ...f, name: e.target.value }))}
-                required
-                style={styles.input}
-              />
-              <div style={styles.formActions}>
-                <button type="submit" className="btn-primary" disabled={buSaving}>{buSaving ? 'Saving…' : 'Save'}</button>
-                <button type="button" className="btn-secondary" onClick={() => { setShowBuForm(false); setEditingBu(null); setBuForm({ name: '' }); }}>Cancel</button>
-              </div>
-            </form>
-          )}
+          <AdminFormModal
+            open={showBuForm}
+            title={editingBu ? 'Edit business unit' : 'Add business unit'}
+            size="sm"
+            onClose={closeBuForm}
+            onSubmit={handleSaveBu}
+            saving={buSaving}
+            savingLabel="Saving…"
+          >
+            <input
+              placeholder="Name (e.g. Engineering)"
+              value={buForm.name}
+              onChange={(e) => setBuForm((f) => ({ ...f, name: e.target.value }))}
+              required
+              style={styles.modalInput}
+              autoFocus
+            />
+          </AdminFormModal>
           {busLoading ? (
             <p>Loading…</p>
           ) : (
@@ -747,15 +778,20 @@ export default function Admin() {
             </table>
           )}
           {buDeleteConfirm && (
-            <div style={styles.modal}>
-              <div style={styles.modalContent}>
-                <p>Delete business unit &quot;{buDeleteConfirm.name}&quot;? Users and apps linked to it will be unassigned.</p>
-                <div style={styles.modalActions}>
-                  <button type="button" className="btn-danger" onClick={() => handleDeleteBu(buDeleteConfirm)} disabled={buSaving}>{buSaving ? 'Deleting…' : 'Delete'}</button>
+            <AdminModal
+              onClose={() => setBuDeleteConfirm(null)}
+              disableClose={buSaving}
+              footer={
+                <div style={styles.modalFooterActions}>
+                  <button type="button" className="btn-danger" onClick={() => handleDeleteBu(buDeleteConfirm)} disabled={buSaving}>
+                    {buSaving ? 'Deleting…' : 'Delete'}
+                  </button>
                   <button type="button" className="btn-secondary" onClick={() => setBuDeleteConfirm(null)}>Cancel</button>
                 </div>
-              </div>
-            </div>
+              }
+            >
+              <p>Delete business unit &quot;{buDeleteConfirm.name}&quot;? Users and apps linked to it will be unassigned.</p>
+            </AdminModal>
           )}
         </section>
           )}
@@ -767,59 +803,62 @@ export default function Admin() {
           <div style={styles.toolbar}>
             <button type="button" className="btn-secondary" onClick={openAddUser}>Add user</button>
           </div>
-          {showAddUserForm && (
-            <form onSubmit={handleAddUser} style={styles.form}>
-              <h3 style={styles.formTitle}>New user</h3>
-              <input
-                type="email"
-                placeholder="Email"
-                value={addUserForm.email}
-                onChange={(e) => setAddUserForm((f) => ({ ...f, email: e.target.value }))}
-                style={styles.input}
-                required
-              />
-              <input
-                type="password"
-                placeholder="Password"
-                value={addUserForm.password}
-                onChange={(e) => setAddUserForm((f) => ({ ...f, password: e.target.value }))}
-                style={styles.input}
-                minLength={6}
-                required
-              />
-              <input
-                type="password"
-                placeholder="Confirm password"
-                value={addUserForm.password_retype}
-                onChange={(e) => setAddUserForm((f) => ({ ...f, password_retype: e.target.value }))}
-                style={styles.input}
-                minLength={6}
-                required
-              />
-              <select
-                value={addUserForm.role}
-                onChange={(e) => setAddUserForm((f) => ({ ...f, role: e.target.value }))}
-                style={styles.input}
-              >
-                <option value="Employee">Employee</option>
-                <option value="Admin">Admin</option>
-              </select>
-              <select
-                value={addUserForm.business_unit_id || '_none'}
-                onChange={(e) => setAddUserForm((f) => ({ ...f, business_unit_id: e.target.value === '_none' ? '' : e.target.value }))}
-                style={styles.input}
-              >
-                <option value="_none">— No business unit —</option>
-                {businessUnits.map((bu) => (
-                  <option key={bu.id} value={bu.id}>{bu.name}</option>
-                ))}
-              </select>
-              <div style={styles.formActions}>
-                <button type="submit" className="btn-primary" disabled={addUserSaving}>{addUserSaving ? 'Creating…' : 'Create user'}</button>
-                <button type="button" className="btn-secondary" onClick={() => { setShowAddUserForm(false); setError(''); }}>Cancel</button>
-              </div>
-            </form>
-          )}
+          <AdminFormModal
+            open={showAddUserForm}
+            title="New user"
+            size="md"
+            onClose={closeAddUserForm}
+            onSubmit={handleAddUser}
+            saving={addUserSaving}
+            saveLabel="Create user"
+            savingLabel="Creating…"
+          >
+            <input
+              type="email"
+              placeholder="Email"
+              value={addUserForm.email}
+              onChange={(e) => setAddUserForm((f) => ({ ...f, email: e.target.value }))}
+              style={styles.modalInput}
+              required
+              autoFocus
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={addUserForm.password}
+              onChange={(e) => setAddUserForm((f) => ({ ...f, password: e.target.value }))}
+              style={styles.modalInput}
+              minLength={6}
+              required
+            />
+            <input
+              type="password"
+              placeholder="Confirm password"
+              value={addUserForm.password_retype}
+              onChange={(e) => setAddUserForm((f) => ({ ...f, password_retype: e.target.value }))}
+              style={styles.modalInput}
+              minLength={6}
+              required
+            />
+            <select
+              value={addUserForm.role}
+              onChange={(e) => setAddUserForm((f) => ({ ...f, role: e.target.value }))}
+              style={styles.modalInput}
+            >
+              <option value="Employee">Employee</option>
+              <option value="Admin">Admin</option>
+            </select>
+            <select
+              value={addUserForm.business_unit_id || '_none'}
+              onChange={(e) => setAddUserForm((f) => ({ ...f, business_unit_id: e.target.value === '_none' ? '' : e.target.value }))}
+              style={styles.modalInput}
+            >
+              <option value="_none">— No business unit —</option>
+              {businessUnits.map((bu) => (
+                <option key={bu.id} value={bu.id}>{bu.name}</option>
+              ))}
+            </select>
+          </AdminFormModal>
           {usersLoading ? (
             <p>Loading…</p>
           ) : (
@@ -875,103 +914,116 @@ export default function Admin() {
             </table>
           )}
           {userEditBu && (
-            <div style={styles.modal}>
-              <div style={styles.modalContent}>
-                <p><strong>{userEditBu.email}</strong> — set Business Unit:</p>
-                <form onSubmit={handleSaveUserBu} style={{ marginTop: 'var(--space-3)' }}>
-                  <select
-                    value={userBuForm === null || userBuForm === undefined ? '_none' : userBuForm}
-                    onChange={(e) => setUserBuForm(e.target.value === '_none' ? '' : e.target.value)}
-                    style={{ ...styles.input, maxWidth: '100%' }}
-                  >
-                    <option value="_none">None</option>
-                    {businessUnits.map((bu) => (
-                      <option key={bu.id} value={bu.id}>{bu.name}</option>
-                    ))}
-                  </select>
-                  <div style={styles.formActions}>
-                    <button type="submit" className="btn-primary" disabled={userBuSaving}>{userBuSaving ? 'Saving…' : 'Save'}</button>
-                    <button type="button" className="btn-secondary" onClick={() => { setUserEditBu(null); setUserBuForm(''); }}>Cancel</button>
-                  </div>
-                </form>
-              </div>
-            </div>
+            <AdminFormModal
+              open={!!userEditBu}
+              title="Edit Business Unit"
+              size="sm"
+              onClose={() => { setUserEditBu(null); setUserBuForm(''); }}
+              onSubmit={handleSaveUserBu}
+              saving={userBuSaving}
+              savingLabel="Saving…"
+            >
+              <p style={{ margin: '0 0 var(--space-3)', fontSize: 'var(--text-small)' }}>
+                <strong>{userEditBu.email}</strong>
+              </p>
+              <select
+                value={userBuForm === null || userBuForm === undefined ? '_none' : userBuForm}
+                onChange={(e) => setUserBuForm(e.target.value === '_none' ? '' : e.target.value)}
+                style={styles.modalInput}
+                autoFocus
+              >
+                <option value="_none">None</option>
+                {businessUnits.map((bu) => (
+                  <option key={bu.id} value={bu.id}>{bu.name}</option>
+                ))}
+              </select>
+            </AdminFormModal>
           )}
           {userDeactivateConfirm && (
-            <div style={styles.modal}>
-              <div style={styles.modalContent}>
-                <p>Deactivate user <strong>{userDeactivateConfirm.email}</strong>? They will not be able to log in.</p>
-                <div style={styles.formActions}>
+            <AdminModal
+              onClose={() => setUserDeactivateConfirm(null)}
+              footer={
+                <div style={styles.modalFooterActions}>
                   <button type="button" className="btn-primary" onClick={handleDeactivate}>Deactivate</button>
                   <button type="button" className="btn-secondary" onClick={() => setUserDeactivateConfirm(null)}>Cancel</button>
                 </div>
-              </div>
-            </div>
+              }
+            >
+              <p>Deactivate user <strong>{userDeactivateConfirm.email}</strong>? They will not be able to log in.</p>
+            </AdminModal>
           )}
           {resetPasswordResult && (
-            <div style={styles.modal}>
-              <div style={styles.modalContent}>
-                <p>Password reset for <strong>{resetPasswordResult.email}</strong>. Copy the password and pass it to the user (no email sent):</p>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 'var(--space-3)' }}>
-                  <input
-                    type="text"
-                    readOnly
-                    value={resetPasswordResult.temporary_password}
-                    style={{ ...styles.input, flex: 1, fontFamily: 'monospace' }}
-                  />
-                  <button type="button" className="btn-primary" onClick={copyPasswordToClipboard}>Copy</button>
-                </div>
-                <div style={{ ...styles.formActions, marginTop: 'var(--space-3)' }}>
+            <AdminModal
+              onClose={() => setResetPasswordResult(null)}
+              footer={
+                <div style={styles.modalFooterActions}>
                   <button type="button" className="btn-secondary" onClick={() => setResetPasswordResult(null)}>Close</button>
                 </div>
+              }
+            >
+              <p>Password reset for <strong>{resetPasswordResult.email}</strong>. Copy the password and pass it to the user (no email sent):</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 'var(--space-3)' }}>
+                <input
+                  type="text"
+                  readOnly
+                  value={resetPasswordResult.temporary_password}
+                  style={{ ...styles.modalInput, flex: 1, marginBottom: 0, fontFamily: 'monospace' }}
+                />
+                <button type="button" className="btn-primary" onClick={copyPasswordToClipboard}>Copy</button>
               </div>
-            </div>
+            </AdminModal>
           )}
           {ssoPrelinkResult && (
-            <div style={styles.modal}>
-              <div style={styles.modalContent}>
-                <p>Prelink URL generated for <strong>{ssoPrelinkResult.email}</strong>.</p>
-                <input type="text" readOnly value={ssoPrelinkResult.url} style={{ ...styles.input, maxWidth: '100%' }} />
-                <div style={styles.formActions}>
+            <AdminModal
+              onClose={() => setSsoPrelinkResult(null)}
+              footer={
+                <div style={styles.modalFooterActions}>
                   <button type="button" className="btn-primary" onClick={() => navigator.clipboard.writeText(ssoPrelinkResult.url)}>Copy link</button>
                   <button type="button" className="btn-secondary" onClick={() => setSsoPrelinkResult(null)}>Close</button>
                 </div>
-              </div>
-            </div>
+              }
+            >
+              <p>Prelink URL generated for <strong>{ssoPrelinkResult.email}</strong>.</p>
+              <input type="text" readOnly value={ssoPrelinkResult.url} style={{ ...styles.modalInput, marginBottom: 0 }} />
+            </AdminModal>
           )}
           {ssoEventsUser && (
-            <div style={styles.modal}>
-              <div style={{ ...styles.modalContent, maxWidth: 700 }}>
-                <p>SSO events for <strong>{ssoEventsUser.email}</strong></p>
-                {ssoEvents.length === 0 ? <p style={styles.helpText}>No events recorded.</p> : (
-                  <table style={styles.table}>
-                    <thead>
-                      <tr>
-                        <th style={styles.tableHeader}>Time</th>
-                        <th style={styles.tableHeader}>Mode</th>
-                        <th style={styles.tableHeader}>Event</th>
-                        <th style={styles.tableHeader}>Status</th>
-                        <th style={styles.tableHeader}>Reason</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ssoEvents.map((ev) => (
-                        <tr key={ev.id}>
-                          <td style={styles.tableCell}>{new Date(ev.created_at).toLocaleString()}</td>
-                          <td style={styles.tableCell}>{ev.mode}</td>
-                          <td style={styles.tableCell}>{ev.event_type}</td>
-                          <td style={styles.tableCell}>{ev.status}</td>
-                          <td style={styles.tableCell}>{ev.reason_code || '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-                <div style={styles.formActions}>
+            <AdminModal
+              size="xl"
+              scrollable
+              onClose={() => setSsoEventsUser(null)}
+              title={`SSO events — ${ssoEventsUser.email}`}
+              footer={
+                <div style={styles.modalFooterActions}>
                   <button type="button" className="btn-secondary" onClick={() => setSsoEventsUser(null)}>Close</button>
                 </div>
-              </div>
-            </div>
+              }
+            >
+              {ssoEvents.length === 0 ? <p style={styles.helpText}>No events recorded.</p> : (
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.tableHeader}>Time</th>
+                      <th style={styles.tableHeader}>Mode</th>
+                      <th style={styles.tableHeader}>Event</th>
+                      <th style={styles.tableHeader}>Status</th>
+                      <th style={styles.tableHeader}>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ssoEvents.map((ev) => (
+                      <tr key={ev.id}>
+                        <td style={styles.tableCell}>{new Date(ev.created_at).toLocaleString()}</td>
+                        <td style={styles.tableCell}>{ev.mode}</td>
+                        <td style={styles.tableCell}>{ev.event_type}</td>
+                        <td style={styles.tableCell}>{ev.status}</td>
+                        <td style={styles.tableCell}>{ev.reason_code || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </AdminModal>
           )}
         </section>
           )}
@@ -1012,9 +1064,15 @@ export default function Admin() {
           )}
         </div>
 
-        {showForm && (
-          <form key={editing ? editing.id : 'new'} onSubmit={handleSave} style={styles.form}>
-            <h3 style={styles.formTitle}>{editing ? 'Edit application' : 'New application'}</h3>
+        <AdminFormModal
+          open={showForm}
+          title={editing ? 'Edit application' : 'New application'}
+          size="xl"
+          onClose={closeAppForm}
+          onSubmit={handleSave}
+          saving={saving || iconUploading}
+          savingLabel="Saving…"
+        >
             <label style={styles.label} htmlFor="app-name">App name</label>
             <input
               id="app-name"
@@ -1023,7 +1081,7 @@ export default function Admin() {
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               required
               autoComplete="off"
-              style={styles.input}
+              style={styles.modalInput}
             />
             <label style={styles.label} htmlFor="app-target-url">
               Target URL <span style={{ color: 'var(--color-destructive)' }} aria-hidden="true">*</span>
@@ -1038,7 +1096,7 @@ export default function Admin() {
               inputMode="url"
               autoComplete="off"
               aria-required="true"
-              style={styles.input}
+              style={styles.modalInput}
             />
             <label style={styles.label} htmlFor="app-description">Description</label>
             <input
@@ -1046,7 +1104,7 @@ export default function Admin() {
               placeholder="Optional short description"
               value={form.description}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-              style={styles.input}
+              style={styles.modalInput}
             />
             <label style={styles.label}>Application icon</label>
             <input
@@ -1078,7 +1136,7 @@ export default function Admin() {
               placeholder="Icon URL (optional, if not uploading a file)"
               value={form.icon_url}
               onChange={(e) => setForm((f) => ({ ...f, icon_url: e.target.value }))}
-              style={styles.input}
+              style={styles.modalInput}
             />
             <label style={styles.label}>Target Business Units</label>
             <MultiSelectDropdown
@@ -1099,7 +1157,7 @@ export default function Admin() {
               <select
                 value={form.sso_mode || 'bridge'}
                 onChange={(e) => setForm((f) => ({ ...f, sso_mode: e.target.value }))}
-                style={styles.input}
+                style={styles.modalInput}
               >
                 <option value="bridge">Bridge (legacy)</option>
                 <option value="oidc">OIDC (strict)</option>
@@ -1109,7 +1167,7 @@ export default function Admin() {
                 placeholder="e.g. jps-web-client"
                 value={form.oauth_client_id || ''}
                 onChange={(e) => setForm((f) => ({ ...f, oauth_client_id: e.target.value }))}
-                style={styles.input}
+                style={styles.modalInput}
               />
               <label style={styles.label}>OIDC Redirect URIs</label>
               <textarea
@@ -1117,26 +1175,11 @@ export default function Admin() {
                 value={form.oidc_redirect_uris || ''}
                 onChange={(e) => setForm((f) => ({ ...f, oidc_redirect_uris: e.target.value }))}
                 rows={4}
-                style={styles.textarea}
+                style={styles.modalTextarea}
               />
               <p style={styles.helpText}>You can enter one URI per line (or comma-separated).</p>
             </div>
-            <div style={styles.formActions}>
-              <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => {
-                  setEditing(null);
-                  setShowForm(false);
-                  setForm(emptyForm);
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        )}
+        </AdminFormModal>
 
         {loading ? (
           <p>Loading…</p>
@@ -1188,17 +1231,20 @@ export default function Admin() {
         )}
 
         {deleteConfirm && (
-          <div style={styles.modal}>
-            <div style={styles.modalContent}>
-              <p>Delete &quot;{deleteConfirm.name}&quot;? This cannot be undone.</p>
-              <div style={styles.modalActions}>
+          <AdminModal
+            onClose={() => setDeleteConfirm(null)}
+            disableClose={saving}
+            footer={
+              <div style={styles.modalFooterActions}>
                 <button type="button" className="btn-danger" onClick={() => handleDelete(deleteConfirm)} disabled={saving}>
                   {saving ? 'Deleting…' : 'Delete'}
                 </button>
                 <button type="button" className="btn-secondary" onClick={() => setDeleteConfirm(null)}>Cancel</button>
               </div>
-            </div>
-          </div>
+            }
+          >
+            <p>Delete &quot;{deleteConfirm.name}&quot;? This cannot be undone.</p>
+          </AdminModal>
         )}
         </>
           )}
@@ -1309,15 +1355,15 @@ const styles = {
   form: { background: 'var(--color-bg-white)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-4)', boxShadow: 'var(--shadow-md)' },
   formTitle: { margin: '0 0 var(--space-3)', fontSize: 'var(--text-h3)', fontFamily: 'var(--font-heading)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
   input: { display: 'block', width: '100%', maxWidth: 400, padding: 'var(--space-2) var(--space-3)', marginBottom: 'var(--space-3)', border: '1px solid var(--color-border-medium)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-base)' },
+  modalInput: { display: 'block', width: '100%', maxWidth: '100%', padding: 'var(--space-2) var(--space-3)', marginBottom: 'var(--space-3)', border: '1px solid var(--color-border-medium)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-base)' },
+  modalTextarea: { display: 'block', width: '100%', maxWidth: '100%', padding: 'var(--space-2) var(--space-3)', marginBottom: 'var(--space-3)', border: '1px solid var(--color-border-medium)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-base)', resize: 'vertical', fontFamily: 'inherit' },
+  modalFooterActions: { display: 'flex', gap: 'var(--space-2)' },
   formActions: { display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-3)' },
   table: { width: '100%', background: 'var(--color-bg-white)', borderRadius: 'var(--radius-md)', borderCollapse: 'collapse', boxShadow: 'var(--shadow-sm)', border: '1px solid var(--color-border-light)' },
   tableHeader: { borderBottom: '1px solid var(--color-border-light)', padding: 'var(--space-2) var(--space-3)', textAlign: 'left', fontWeight: 'var(--font-weight-medium)', fontSize: 'var(--text-small)', color: 'var(--color-text-charcoal)' },
   tableCell: { padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--color-border-light)', fontSize: 'var(--text-small)' },
   actionsCell: { padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--color-border-light)', fontSize: 'var(--text-small)', display: 'flex', flexDirection: 'row', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'nowrap' },
   urlCell: { fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  modal: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
-  modalContent: { background: 'var(--color-bg-white)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', maxWidth: 400, boxShadow: 'var(--shadow-lg)' },
-  modalActions: { display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-3)' },
   section: { marginBottom: 'var(--space-6)' },
   sectionTitle: { margin: '0 0 var(--space-1)', fontSize: 'var(--text-h3)', fontFamily: 'var(--font-heading)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
   sectionDesc: { margin: '0 0 var(--space-3)', fontSize: 'var(--text-small)', color: 'var(--color-text-steel)' },
@@ -1336,7 +1382,7 @@ const styles = {
   helpText: { margin: '0 0 var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)', maxWidth: 480 },
   iconPreviewRow: { display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', flexWrap: 'wrap' },
   iconPreviewImg: { width: 48, height: 48, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--color-border-light)' },
-  subSection: { marginTop: 'var(--space-2)', marginBottom: 'var(--space-2)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--color-border-light)', maxWidth: 520 },
+  subSection: { marginTop: 'var(--space-2)', marginBottom: 'var(--space-2)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--color-border-light)' },
   subSectionTitle: { margin: '0 0 var(--space-2)', fontSize: 'var(--text-base)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
   textarea: { display: 'block', width: '100%', maxWidth: 520, padding: 'var(--space-2) var(--space-3)', marginBottom: 'var(--space-3)', border: '1px solid var(--color-border-medium)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-base)', resize: 'vertical', fontFamily: 'inherit' },
   tableCellIcon: { padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--color-border-light)', verticalAlign: 'middle', width: 56 },
