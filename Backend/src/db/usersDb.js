@@ -99,9 +99,27 @@ async function getTokenVersion(db, id) {
 }
 
 async function updateBusinessUnit(db, id, business_unit_id) {
+  return updateProfile(db, id, { business_unit_id });
+}
+
+/** Update role and/or business_unit_id. Only fields present in `fields` are updated. */
+async function updateProfile(db, id, { role, business_unit_id }) {
+  const sets = [];
+  const params = [];
+  let i = 1;
+  if (role !== undefined) {
+    sets.push(`role = $${i++}`);
+    params.push(role);
+  }
+  if (business_unit_id !== undefined) {
+    sets.push(`business_unit_id = $${i++}`);
+    params.push(business_unit_id);
+  }
+  if (sets.length === 0) return null;
+  params.push(id);
   await db.query(
-    'UPDATE users SET business_unit_id = $1 WHERE id = $2 AND deleted_at IS NULL',
-    [business_unit_id, id]
+    `UPDATE users SET ${sets.join(', ')} WHERE id = $${i} AND deleted_at IS NULL`,
+    params
   );
   const { rows } = await db.query(
     'SELECT id, email, role, business_unit_id FROM users WHERE id = $1',
@@ -159,6 +177,7 @@ module.exports = {
   create,
   updatePassword,
   updateBusinessUnit,
+  updateProfile,
   softDelete,
   incrementFailedLogin,
   resetFailedLogin,

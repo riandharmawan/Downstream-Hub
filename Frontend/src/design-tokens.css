@@ -15,6 +15,9 @@
   --color-border-light: #E0E0E0;
   --color-border-medium: #C4C4C4;
   --color-border-dark: #9E9E9E;
+  --color-action-blue: #2563EB;
+  --color-action-blue-deep: #1D4ED8;
+  --color-action-blue-hover-bg: #EFF6FF;
 
   /* Color — semantic */
   --color-primary: var(--color-brand-red);

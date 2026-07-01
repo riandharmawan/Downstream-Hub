@@ -257,7 +257,7 @@ router.post('/', authMiddleware, requireAdmin, async (req, res) => {
     if (business_unit_id != null && business_unit_id !== '') {
       const bu = await businessUnitsDb.getById(pool, business_unit_id);
       if (!bu) {
-        return res.status(400).json({ error: 'Business unit not found' });
+        return res.status(400).json({ error: 'Department not found' });
       }
       buId = bu.id;
     }
@@ -357,29 +357,55 @@ router.post('/:id/reset-password', authMiddleware, requireAdmin, async (req, res
   }
 });
 
-// PATCH /api/users/:id — update user's business_unit_id (Admin only)
+// PATCH /api/users/:id — update user's role and/or business_unit_id (Admin only)
 router.patch('/:id', authMiddleware, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { business_unit_id } = req.body || {};
-  const buId = business_unit_id === null || business_unit_id === undefined || business_unit_id === ''
-    ? null
-    : business_unit_id;
-  if (buId !== null && typeof buId !== 'string') {
-    return res.status(400).json({ error: 'business_unit_id must be a UUID or null' });
+  const body = req.body || {};
+  const hasBu = Object.prototype.hasOwnProperty.call(body, 'business_unit_id');
+  const hasRole = Object.prototype.hasOwnProperty.call(body, 'role');
+  if (!hasBu && !hasRole) {
+    return res.status(400).json({ error: 'role or business_unit_id required' });
   }
+
+  const validRoles = ['Admin', 'Employee'];
+  let roleVal;
+  if (hasRole) {
+    roleVal = String(body.role);
+    if (!validRoles.includes(roleVal)) {
+      return res.status(400).json({ error: 'role must be Admin or Employee' });
+    }
+  }
+
+  let buId;
+  if (hasBu) {
+    buId = body.business_unit_id === null || body.business_unit_id === undefined || body.business_unit_id === ''
+      ? null
+      : body.business_unit_id;
+    if (buId !== null && typeof buId !== 'string') {
+      return res.status(400).json({ error: 'business_unit_id must be a UUID or null' });
+    }
+  }
+
   const client = await pool.connect();
   try {
     const before = await usersDb.getById(client, id);
     if (!before) {
       return res.status(404).json({ error: 'User not found' });
     }
-    if (buId !== null) {
+    if (hasRole && req.user.id === id && before.role === 'Admin' && roleVal === 'Employee') {
+      return res.status(400).json({ error: 'You cannot change your own role' });
+    }
+    if (hasBu && buId !== null) {
       const bu = await businessUnitsDb.getById(client, buId);
       if (!bu) {
-        return res.status(400).json({ error: 'Business unit not found' });
+        return res.status(400).json({ error: 'Department not found' });
       }
     }
-    const row = await usersDb.updateBusinessUnit(client, id, buId);
+
+    const updates = {};
+    if (hasRole) updates.role = roleVal;
+    if (hasBu) updates.business_unit_id = buId;
+    const row = await usersDb.updateProfile(client, id, updates);
     await auditLog(client, {
       actorId: req.user.id,
       actionType: 'UPDATE',
@@ -390,7 +416,7 @@ router.patch('/:id', authMiddleware, requireAdmin, async (req, res) => {
     });
     res.json(row);
   } catch (err) {
-    console.error('Update user BU error:', err);
+    console.error('Update user error:', err);
     res.status(500).json({ error: 'Failed to update user' });
   } finally {
     client.release();

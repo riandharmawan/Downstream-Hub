@@ -83,9 +83,9 @@ export default function MultiSelectDropdown({
   if (selected.length === 0) {
     triggerLabel = placeholder;
   } else if (selected.length === options.length) {
-    triggerLabel = 'All BUs';
+    triggerLabel = 'All departments';
   } else {
-    triggerLabel = `${selected.length} BU${selected.length === 1 ? '' : 's'} selected`;
+    triggerLabel = `${selected.length} department${selected.length === 1 ? '' : 's'} selected`;
   }
 
   return (

@@ -112,6 +112,22 @@ router.get('/redirect', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Application not found' });
     }
 
+    if (app.sso_mode === 'none') {
+      await ssoAccessLogsDb.insert(pool, {
+        user_id: req.user.id,
+        application_id: app.id,
+        outcome: 'success',
+        ip_address: getClientIp(req),
+      });
+      return res.json({ bridgeUrl: app.target_url, mode: 'none' });
+    }
+
+    if (app.sso_mode !== 'oidc') {
+      return res.status(400).json({
+        error: 'Application SSO mode is not configured. Set sso_mode to "oidc" or "none" in Admin.',
+      });
+    }
+
     const ssoUser = await usersDb.getForSsoToken(pool, req.user.id);
     if (!effectiveEmailVerified(ssoUser)) {
       const user = await usersDb.getById(pool, req.user.id);
@@ -144,55 +160,30 @@ router.get('/redirect', authMiddleware, async (req, res) => {
       });
     }
 
-    const baseUrl = app.target_url.replace(/\/$/, '');
-    const targetPath = baseUrl.includes('/auth/') ? '' : '/auth/hub';
-    const targetUrl = targetPath ? `${baseUrl}${targetPath}` : baseUrl;
-
-    const payload = {
-      user_id: req.user.id,
-      email: req.user.email,
-      name: (ssoUser && ssoUser.name) || req.user.email,
-      email_verified: effectiveEmailVerified(ssoUser),
-    };
     const audience = app.oauth_client_id || app.id;
-    const mode = app.sso_mode === 'oidc' ? 'oidc' : 'bridge';
-    if (ENFORCE_OIDC_ONLY && mode !== 'oidc') {
-      return res.status(400).json({
-        error: 'SSO OIDC-only enforcement is enabled. This application must be configured with sso_mode=oidc.',
-      });
+    const redirectUris = parseRedirectUriList(app);
+    const redirectUri = redirectUris[0];
+    if (!redirectUri) {
+      return res.status(400).json({ error: 'Application is in OIDC mode but has no redirect URI configured' });
     }
-    const token = await signSsoToken(payload, audience);
-
-    let bridgeUrl;
-    if (mode === 'oidc') {
-      const redirectUris = parseRedirectUriList(app);
-      const redirectUri = redirectUris[0];
-      if (!redirectUri) {
-        return res.status(400).json({ error: 'Application is in OIDC mode but has no redirect URI configured' });
-      }
-      const codeVerifier = toBase64Url(crypto.randomBytes(48));
-      const codeChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
-      const state = toBase64Url(crypto.randomBytes(16));
-      const nonce = toBase64Url(crypto.randomBytes(12));
-      const refPayload = {
-        user_id: req.user.id,
-        client_id: audience,
-        redirect_uri: redirectUri,
-        response_type: 'code',
-        scope: 'openid profile email',
-        state,
-        nonce,
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-        code_verifier: codeVerifier,
-      };
-      const ref = await signBridgeRef(refPayload);
-      bridgeUrl = `${API_PUBLIC_URL}/api/sso/authorize?ref=${encodeURIComponent(ref)}&cv=${encodeURIComponent(codeVerifier)}`;
-    } else {
-      const refPayload = { token, targetUrl, applicationId: app.id };
-      const ref = await signBridgeRef(refPayload);
-      bridgeUrl = `${API_PUBLIC_URL}/api/sso/bridge?ref=${encodeURIComponent(ref)}`;
-    }
+    const codeVerifier = toBase64Url(crypto.randomBytes(48));
+    const codeChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
+    const state = toBase64Url(crypto.randomBytes(16));
+    const nonce = toBase64Url(crypto.randomBytes(12));
+    const refPayload = {
+      user_id: req.user.id,
+      client_id: audience,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: 'openid profile email',
+      state,
+      nonce,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+      code_verifier: codeVerifier,
+    };
+    const ref = await signBridgeRef(refPayload);
+    const bridgeUrl = `${API_PUBLIC_URL}/api/sso/authorize?ref=${encodeURIComponent(ref)}&cv=${encodeURIComponent(codeVerifier)}`;
 
     await ssoAccessLogsDb.insert(pool, {
       user_id: req.user.id,
@@ -201,7 +192,7 @@ router.get('/redirect', authMiddleware, async (req, res) => {
       ip_address: getClientIp(req),
     });
 
-    res.json({ bridgeUrl, mode });
+    res.json({ bridgeUrl, mode: 'oidc' });
   } catch (err) {
     console.error('SSO redirect error:', err);
     res.status(500).json({ error: 'Failed to generate redirect' });

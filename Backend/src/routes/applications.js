@@ -85,7 +85,9 @@ function validateAppBody(body) {
   if (!isValidIconUrl(iconTrim)) {
     return { error: 'Icon must be empty, a valid http(s) URL, or a hub upload path under /uploads/app-icons/' };
   }
-  const mode = sso_mode === 'oidc' ? 'oidc' : 'bridge';
+  const modeRaw = sso_mode == null ? 'none' : String(sso_mode).trim();
+  const mode = modeRaw === 'oidc' ? 'oidc' : modeRaw === 'none' ? 'none' : null;
+  if (!mode) return { error: 'sso_mode must be "none" or "oidc"' };
   const clientId = oauth_client_id == null ? '' : String(oauth_client_id).trim();
   const redirectUris = Array.isArray(oidc_redirect_uris) ? oidc_redirect_uris.map((u) => String(u).trim()).filter(Boolean) : [];
   if (mode === 'oidc') {
@@ -118,8 +120,8 @@ function validateAppBody(body) {
     target_url: target_url.trim(),
     target_bu_id: legacyBuId,
     target_bu_ids: resolvedBuIds,
-    oauth_client_id: clientId || null,
-    oidc_redirect_uris: redirectUris,
+    oauth_client_id: mode === 'oidc' ? clientId : null,
+    oidc_redirect_uris: mode === 'oidc' ? redirectUris : [],
     sso_mode: mode,
   };
 }
@@ -201,7 +203,7 @@ router.post('/', authMiddleware, requireAdmin, async (req, res) => {
   // Validate each BU ID exists
   for (const buId of validated.target_bu_ids) {
     const bu = await businessUnitsDb.getById(pool, buId);
-    if (!bu) return res.status(400).json({ error: `Business unit not found: ${buId}` });
+    if (!bu) return res.status(400).json({ error: `Department not found: ${buId}` });
   }
   const client = await pool.connect();
   try {
@@ -231,7 +233,7 @@ router.put('/:id', authMiddleware, requireAdmin, async (req, res) => {
   // Validate each BU ID exists
   for (const buId of validated.target_bu_ids) {
     const bu = await businessUnitsDb.getById(pool, buId);
-    if (!bu) return res.status(400).json({ error: `Business unit not found: ${buId}` });
+    if (!bu) return res.status(400).json({ error: `Department not found: ${buId}` });
   }
   const client = await pool.connect();
   try {

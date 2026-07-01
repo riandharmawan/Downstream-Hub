@@ -17,7 +17,7 @@ router.get('/', authMiddleware, requireAdmin, async (req, res) => {
     res.json({ business_units: rows });
   } catch (err) {
     console.error('List business units error:', err);
-    res.status(500).json({ error: 'Failed to list business units' });
+    res.status(500).json({ error: 'Failed to list departments' });
   }
 });
 
@@ -40,9 +40,9 @@ router.post('/', authMiddleware, requireAdmin, async (req, res) => {
     });
     res.status(201).json(row);
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'Business unit name already exists' });
+    if (err.code === '23505') return res.status(409).json({ error: 'Department name already exists' });
     console.error('Create business unit error:', err);
-    res.status(500).json({ error: 'Failed to create business unit' });
+    res.status(500).json({ error: 'Failed to create department' });
   } finally {
     client.release();
   }
@@ -59,11 +59,11 @@ router.put('/:id', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const before = await businessUnitsDb.getById(client, id);
     if (!before) {
-      return res.status(404).json({ error: 'Business unit not found' });
+      return res.status(404).json({ error: 'Department not found' });
     }
     const row = await businessUnitsDb.update(client, id, name);
     if (!row) {
-      return res.status(404).json({ error: 'Business unit not found' });
+      return res.status(404).json({ error: 'Department not found' });
     }
     await auditLog(client, {
       actorId: req.user.id,
@@ -75,9 +75,9 @@ router.put('/:id', authMiddleware, requireAdmin, async (req, res) => {
     });
     res.json(row);
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'Business unit name already exists' });
+    if (err.code === '23505') return res.status(409).json({ error: 'Department name already exists' });
     console.error('Update business unit error:', err);
-    res.status(500).json({ error: 'Failed to update business unit' });
+    res.status(500).json({ error: 'Failed to update department' });
   } finally {
     client.release();
   }
@@ -90,12 +90,12 @@ router.delete('/:id', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const before = await businessUnitsDb.getById(client, id);
     if (!before) {
-      return res.status(404).json({ error: 'Business unit not found' });
+      return res.status(404).json({ error: 'Department not found' });
     }
     await businessUnitsDb.clearUserAndAppReferences(client, id);
     const ok = await businessUnitsDb.softDelete(client, id);
     if (!ok) {
-      return res.status(404).json({ error: 'Business unit not found' });
+      return res.status(404).json({ error: 'Department not found' });
     }
     await auditLog(client, {
       actorId: req.user.id,
@@ -108,7 +108,7 @@ router.delete('/:id', authMiddleware, requireAdmin, async (req, res) => {
     res.status(204).send();
   } catch (err) {
     console.error('Delete business unit error:', err);
-    res.status(500).json({ error: 'Failed to delete business unit' });
+    res.status(500).json({ error: 'Failed to delete department' });
   } finally {
     client.release();
   }

@@ -170,7 +170,7 @@ router.post('/register', registerLimit, async (req, res) => {
     if (business_unit_id != null && business_unit_id !== '') {
       const bu = await businessUnitsDb.getById(pool, business_unit_id);
       if (!bu) {
-        return res.status(400).json({ error: 'Invalid business unit' });
+        return res.status(400).json({ error: 'Invalid department' });
       }
       buId = bu.id;
     }

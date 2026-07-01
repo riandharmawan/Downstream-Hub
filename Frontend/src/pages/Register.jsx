@@ -83,9 +83,9 @@ export default function Register() {
             value={businessUnitId}
             onChange={(e) => setBusinessUnitId(e.target.value)}
             style={styles.input}
-            aria-label="Business unit"
+            aria-label="Department"
           >
-            <option value="">— No business unit —</option>
+            <option value="">— No department —</option>
             {businessUnits.map((bu) => (
               <option key={bu.id} value={bu.id}>
                 {bu.name}

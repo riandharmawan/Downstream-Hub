@@ -283,6 +283,105 @@ describe('API Integration (TEST-PLAN)', () => {
     });
   });
 
+  describe('Applications — SSO mode', () => {
+    const runSsoModeTest = hasDb ? test : test.skip;
+
+    let ssoModeAdminToken;
+    let ssoModeUserToken;
+    let ssoModeUserId;
+    let noneAppId;
+    const noneTargetUrl = 'https://direct-app.example.com/home';
+
+    beforeAll(async () => {
+      if (!hasDb) return;
+
+      const adminEmail = `sso-mode-admin-${Date.now()}@example.com`;
+      const adminPass = 'SsoModeAdmin1!';
+      let res = await request(app)
+        .post('/api/auth/register')
+        .send({ email: adminEmail, password: adminPass, password_retype: adminPass });
+      if (res.status !== 201) {
+        res = await request(app).post('/api/auth/login').send({ email: adminEmail, password: adminPass });
+      }
+      ssoModeAdminToken = res.body.token;
+
+      const userEmail = `sso-mode-user-${Date.now()}@example.com`;
+      const userPass = 'SsoModeUser1!';
+      const userReg = await request(app)
+        .post('/api/auth/register')
+        .send({ email: userEmail, password: userPass, password_retype: userPass });
+      ssoModeUserId = userReg.body?.user?.id;
+      const loginRes = await request(app).post('/api/auth/login').send({ email: userEmail, password: userPass });
+      ssoModeUserToken = loginRes.body?.token;
+
+      const appRes = await request(app)
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${ssoModeAdminToken}`)
+        .send({
+          name: `NoneModeApp-${Date.now()}`,
+          target_url: noneTargetUrl,
+          target_bu_ids: [],
+          sso_mode: 'none',
+        });
+      noneAppId = appRes.body?.id;
+    });
+
+    runSsoModeTest('POST /api/applications — sso_mode none succeeds without OIDC fields', async () => {
+      if (!ssoModeAdminToken) return;
+      const res = await request(app)
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${ssoModeAdminToken}`)
+        .send({
+          name: `NoneModeApp2-${Date.now()}`,
+          target_url: 'https://another-direct.example.com',
+          sso_mode: 'none',
+        });
+      expect(res.status).toBe(201);
+      expect(res.body.sso_mode).toBe('none');
+      expect(res.body.oauth_client_id).toBeNull();
+      expect(res.body.oidc_redirect_uris).toEqual([]);
+    });
+
+    runSsoModeTest('POST /api/applications — sso_mode oidc requires Client ID and Redirect URIs', async () => {
+      if (!ssoModeAdminToken) return;
+      const res = await request(app)
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${ssoModeAdminToken}`)
+        .send({
+          name: `OidcMissing-${Date.now()}`,
+          target_url: 'https://oidc-missing.example.com',
+          sso_mode: 'oidc',
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/oauth_client_id is required/i);
+    });
+
+    runSsoModeTest('POST /api/applications — invalid sso_mode returns 400', async () => {
+      if (!ssoModeAdminToken) return;
+      const res = await request(app)
+        .post('/api/applications')
+        .set('Authorization', `Bearer ${ssoModeAdminToken}`)
+        .send({
+          name: `BadMode-${Date.now()}`,
+          target_url: 'https://bad-mode.example.com',
+          sso_mode: 'bridge',
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/sso_mode must be/i);
+    });
+
+    runSsoModeTest('GET /api/sso/redirect — none mode returns target_url without email verification', async () => {
+      if (!ssoModeUserToken || !noneAppId || !ssoModeUserId) return;
+      await pool.query('UPDATE users SET hub_oidc_email_verified_at = NULL WHERE id = $1', [ssoModeUserId]);
+      const res = await request(app)
+        .get(`/api/sso/redirect?applicationId=${encodeURIComponent(noneAppId)}`)
+        .set('Authorization', `Bearer ${ssoModeUserToken}`);
+      expect(res.status).toBe(200);
+      expect(res.body.mode).toBe('none');
+      expect(res.body.bridgeUrl).toBe(noneTargetUrl);
+    });
+  });
+
   describe('Applications', () => {
     test('GET /api/applications/for-me without token returns 401', async () => {
       const res = await request(app).get('/api/applications/for-me');
@@ -308,6 +407,128 @@ describe('API Integration (TEST-PLAN)', () => {
     test('GET /api/users without token returns 401', async () => {
       const res = await request(app).get('/api/users');
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe('Users — PATCH role and profile', () => {
+    const runUserPatchTest = hasDb ? test : test.skip;
+
+    let adminToken;
+    let adminUserId;
+    let employeeUserId;
+    let employeeToken;
+    let buId;
+
+    beforeAll(async () => {
+      if (!hasDb || !pool) return;
+      try {
+        const { rows: active } = await pool.query(
+          `SELECT 1 FROM allowed_domains WHERE domain = 'example.com' AND deleted_at IS NULL LIMIT 1`
+        );
+        if (active.length === 0) {
+          await pool.query(
+            `INSERT INTO allowed_domains (id, domain, created_at) VALUES (gen_random_uuid(), 'example.com', now())`
+          );
+        }
+
+        const adminEmail = `role-patch-admin-${Date.now()}@example.com`;
+        const adminPass = 'RolePatchAdmin1!';
+        let res = await request(app).post('/api/auth/register').send({
+          email: adminEmail,
+          password: adminPass,
+          password_retype: adminPass,
+        });
+        if (res.status !== 201) {
+          res = await request(app).post('/api/auth/login').send({ email: adminEmail, password: adminPass });
+        }
+        adminUserId = res.body.user?.id;
+        if (adminUserId && res.body.user?.role !== 'Admin') {
+          await pool.query(`UPDATE users SET role = 'Admin' WHERE id = $1`, [adminUserId]);
+        }
+        res = await request(app).post('/api/auth/login').send({ email: adminEmail, password: adminPass });
+        expect(res.status).toBe(200);
+        adminToken = res.body.token;
+        adminUserId = res.body.user?.id || adminUserId;
+
+        const buRes = await request(app)
+          .post('/api/business-units')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ name: `RolePatch-BU-${Date.now()}` });
+        buId = buRes.body?.business_unit?.id || buRes.body?.id;
+
+        const employeeEmail = `role-patch-employee-${Date.now()}@example.com`;
+        const employeePass = 'RolePatchEmp1!';
+        res = await request(app).post('/api/auth/register').send({
+          email: employeeEmail,
+          password: employeePass,
+          password_retype: employeePass,
+        });
+        expect(res.status).toBe(201);
+        employeeUserId = res.body.user.id;
+        employeeToken = res.body.token;
+      } catch (e) {
+        console.warn('Users PATCH setup failed:', e.message);
+        adminToken = null;
+      }
+    });
+
+    runUserPatchTest('PATCH /api/users/:id — promotes Employee to Admin', async () => {
+      if (!adminToken || !employeeUserId) return;
+      const res = await request(app)
+        .patch(`/api/users/${employeeUserId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ role: 'Admin' });
+      expect(res.status).toBe(200);
+      expect(res.body.role).toBe('Admin');
+    });
+
+    runUserPatchTest('PATCH /api/users/:id — demotes another user Admin to Employee', async () => {
+      if (!adminToken || !employeeUserId) return;
+      const res = await request(app)
+        .patch(`/api/users/${employeeUserId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ role: 'Employee' });
+      expect(res.status).toBe(200);
+      expect(res.body.role).toBe('Employee');
+    });
+
+    runUserPatchTest('PATCH /api/users/:id — self-demotion returns 400', async () => {
+      if (!adminToken || !adminUserId) return;
+      const res = await request(app)
+        .patch(`/api/users/${adminUserId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ role: 'Employee' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/cannot change your own role/i);
+    });
+
+    runUserPatchTest('PATCH /api/users/:id — updates role and business_unit_id together', async () => {
+      if (!adminToken || !employeeUserId || !buId) return;
+      const res = await request(app)
+        .patch(`/api/users/${employeeUserId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ role: 'Admin', business_unit_id: buId });
+      expect(res.status).toBe(200);
+      expect(res.body.role).toBe('Admin');
+      expect(res.body.business_unit_id).toBe(buId);
+    });
+
+    runUserPatchTest('PATCH /api/users/:id — empty body returns 400', async () => {
+      if (!adminToken || !employeeUserId) return;
+      const res = await request(app)
+        .patch(`/api/users/${employeeUserId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({});
+      expect(res.status).toBe(400);
+    });
+
+    runUserPatchTest('PATCH /api/users/:id — Employee caller returns 403', async () => {
+      if (!employeeToken || !employeeUserId) return;
+      const res = await request(app)
+        .patch(`/api/users/${employeeUserId}`)
+        .set('Authorization', `Bearer ${employeeToken}`)
+        .send({ role: 'Admin' });
+      expect(res.status).toBe(403);
     });
   });
 

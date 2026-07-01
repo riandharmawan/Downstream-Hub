@@ -175,7 +175,7 @@ async function create(db, { name, description, icon_url, target_url, target_bu_i
     `INSERT INTO applications (name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id, name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode, created_at, updated_at`,
-    [name, description, icon_url || '', target_url, target_bu_id, oauth_client_id || null, oidc_redirect_uris || [], sso_mode || 'bridge']
+    [name, description, icon_url || '', target_url, target_bu_id, oauth_client_id || null, oidc_redirect_uris || [], sso_mode || 'none']
   );
   return rows[0];
 }
@@ -186,7 +186,7 @@ async function update(db, id, { name, description, icon_url, target_url, target_
      SET name = $1, description = $2, icon_url = $3, target_url = $4, target_bu_id = $5,
          oauth_client_id = $6, oidc_redirect_uris = $7, sso_mode = $8, updated_at = now()
      WHERE id = $9 AND deleted_at IS NULL`,
-    [name, description, icon_url || '', target_url, target_bu_id, oauth_client_id || null, oidc_redirect_uris || [], sso_mode || 'bridge', id]
+    [name, description, icon_url || '', target_url, target_bu_id, oauth_client_id || null, oidc_redirect_uris || [], sso_mode || 'none', id]
   );
   const { rows } = await db.query(
     'SELECT id, name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode, created_at, updated_at FROM applications WHERE id = $1',

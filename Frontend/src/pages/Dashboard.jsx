@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
 import { applicationInitials } from '../utils/applicationInitials';
 import { resolveIconSrc } from '../utils/resolveIconSrc';
+import SsoBadge from '../components/SsoBadge';
 
 export default function Dashboard() {
   const { user, token, logout } = useAuth();
@@ -58,7 +59,7 @@ export default function Dashboard() {
         <div style={styles.userRow}>
           <span style={styles.userEmail}>{user?.email}</span>
           {user?.business_unit_name != null && user.business_unit_name !== '' && (
-            <span style={styles.userBu}>BU: {user.business_unit_name}</span>
+            <span style={styles.userBu}>Department: {user.business_unit_name}</span>
           )}
           {user?.role === 'Admin' && (
             <Link to="/admin" style={styles.adminLink}>Admin</Link>
@@ -68,7 +69,6 @@ export default function Dashboard() {
         </div>
       </header>
       <main style={styles.main}>
-        <p style={styles.subtitle}>Single source of truth for internal tools — click an app to open it with SSO.</p>
         {error && <div style={styles.error}>{error}</div>}
         {loading ? (
           <p>Loading applications…</p>
@@ -86,6 +86,9 @@ export default function Dashboard() {
                 onClick={() => handleAppClick(app)}
                 disabled={!!redirecting}
               >
+                <span style={styles.cardBadge}>
+                  <SsoBadge ssoMode={app.sso_mode} />
+                </span>
                 <div style={styles.cardIcon}>
                   {iconSrc ? (
                     <img src={iconSrc} alt="" style={styles.iconImg} />
@@ -118,11 +121,11 @@ const styles = {
   adminLink: { color: 'var(--color-primary)', textDecoration: 'none', fontSize: 'var(--text-small)', fontWeight: 'var(--font-weight-medium)' },
   logoutBtn: {},
   main: { maxWidth: 960, margin: '0 auto', padding: 'var(--space-4)' },
-  subtitle: { color: 'var(--color-text-steel)', marginBottom: 'var(--space-4)', fontSize: 'var(--text-small)' },
   error: { padding: 'var(--space-3)', background: '#FEE2E2', color: 'var(--color-destructive)', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-small)' },
   empty: { color: 'var(--color-text-steel)', fontSize: 'var(--text-small)' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 'var(--space-3)' },
   card: { background: 'var(--color-bg-white)', border: '1px solid var(--color-border-light)', borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', textAlign: 'center', cursor: 'pointer', boxShadow: 'var(--shadow-sm)', position: 'relative', transition: 'border-color var(--duration-fast) var(--easing-default)' },
+  cardBadge: { position: 'absolute', top: 'var(--space-2)', right: 'var(--space-2)' },
   cardIcon: { width: 48, height: 48, margin: '0 auto var(--space-3)', borderRadius: '12px', overflow: 'hidden', background: 'var(--color-bg-lighter)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   iconImg: { width: '100%', height: '100%', objectFit: 'cover' },
   iconInitials: {

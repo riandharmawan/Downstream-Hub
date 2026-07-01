@@ -33,7 +33,7 @@ export default function AdminFormModal({
       disableClose={disableClose ?? saving}
       footer={
         <div style={footerActionsStyle}>
-          <button type="submit" form="admin-form-modal-form" className="btn-primary" disabled={saving}>
+          <button type="submit" form="admin-form-modal-form" className="btn-secondary" disabled={saving}>
             {submitLabel}
           </button>
           <button type="button" className="btn-secondary" onClick={onClose} disabled={saving}>

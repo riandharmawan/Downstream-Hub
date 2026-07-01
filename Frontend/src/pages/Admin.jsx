@@ -5,12 +5,14 @@ import { apiRequest, apiUpload } from '../api';
 import { applicationInitials } from '../utils/applicationInitials';
 import { resolveIconSrc } from '../utils/resolveIconSrc';
 import MultiSelectDropdown from '../components/admin/MultiSelectDropdown';
+import ApplicationIconField from '../components/admin/ApplicationIconField';
+import SsoBadge from '../components/SsoBadge';
 import AdminModal from '../components/admin/AdminModal';
 import AdminFormModal from '../components/admin/AdminFormModal';
 
 const SECTIONS = [
   { id: 'domains', label: 'Domains', path: 'domains' },
-  { id: 'business-units', label: 'Business Units', path: 'business-units' },
+  { id: 'business-units', label: 'Departments', path: 'business-units' },
   { id: 'users', label: 'Users', path: 'users' },
   { id: 'applications', label: 'Applications', path: 'applications' },
   { id: 'password-policy', label: 'Password policy', path: 'password-policy' },
@@ -45,7 +47,7 @@ export default function Admin() {
     icon_url: '',
     target_url: '',
     target_bu_ids: [],
-    sso_mode: 'bridge',
+    sso_mode: 'none',
     oauth_client_id: '',
     oidc_redirect_uris: '',
   });
@@ -68,9 +70,9 @@ export default function Admin() {
   const [buSaving, setBuSaving] = useState(false);
   const [users, setUsers] = useState([]);
   const [usersLoading, setUsersLoading] = useState(true);
-  const [userEditBu, setUserEditBu] = useState(null);
-  const [userBuForm, setUserBuForm] = useState('');
-  const [userBuSaving, setUserBuSaving] = useState(false);
+  const [userEdit, setUserEdit] = useState(null);
+  const [userEditForm, setUserEditForm] = useState({ role: 'Employee', business_unit_id: '' });
+  const [userEditSaving, setUserEditSaving] = useState(false);
   const [showAddUserForm, setShowAddUserForm] = useState(false);
   const [addUserForm, setAddUserForm] = useState({ email: '', password: '', password_retype: '', role: 'Employee', business_unit_id: '' });
   const [addUserSaving, setAddUserSaving] = useState(false);
@@ -201,6 +203,14 @@ export default function Admin() {
     });
   }, [applications, appBuFilterIds, appBuFilterIncludeGlobal, appSearchQuery]);
 
+  const hasAppFilters = appBuFilterIds.length > 0 || appBuFilterIncludeGlobal || !!appSearchQuery.trim();
+
+  function clearAppFilters() {
+    setAppBuFilterIds([]);
+    setAppBuFilterIncludeGlobal(false);
+    setAppSearchQuery('');
+  }
+
   async function handleSavePasswordPolicy(e) {
     e.preventDefault();
     setError('');
@@ -240,7 +250,7 @@ export default function Admin() {
     icon_url: '',
     target_url: '',
     target_bu_ids: [],
-    sso_mode: 'bridge',
+    sso_mode: 'none',
     oauth_client_id: '',
     oidc_redirect_uris: '',
   };
@@ -263,7 +273,7 @@ export default function Admin() {
       icon_url: app.icon_url || '',
       target_url: app.target_url || '',
       target_bu_ids: buIds,
-      sso_mode: app.sso_mode || 'bridge',
+      sso_mode: app.sso_mode === 'oidc' ? 'oidc' : 'none',
       oauth_client_id: app.oauth_client_id || '',
       oidc_redirect_uris: Array.isArray(app.oidc_redirect_uris) ? app.oidc_redirect_uris.join('\n') : '',
     });
@@ -405,28 +415,30 @@ export default function Admin() {
     setUsers(data.users || []);
   }
 
-  function openUserBuEdit(u) {
-    setUserEditBu(u);
-    setUserBuForm(u.business_unit_id || '');
+  function openUserEdit(u) {
+    setUserEdit(u);
+    setUserEditForm({ role: u.role, business_unit_id: u.business_unit_id || '' });
   }
 
-  async function handleSaveUserBu(e) {
+  async function handleSaveUserEdit(e) {
     e.preventDefault();
     setError('');
-    setUserBuSaving(true);
+    setUserEditSaving(true);
     try {
-      const buId = userBuForm === '' || userBuForm === '_none' ? null : userBuForm;
-      await apiRequest(`/api/users/${userEditBu.id}`, {
+      const buId = userEditForm.business_unit_id === '' || userEditForm.business_unit_id === '_none'
+        ? null
+        : userEditForm.business_unit_id;
+      await apiRequest(`/api/users/${userEdit.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ business_unit_id: buId }),
+        body: JSON.stringify({ role: userEditForm.role, business_unit_id: buId }),
       }, token);
       await loadUsers();
-      setUserEditBu(null);
-      setUserBuForm('');
+      setUserEdit(null);
+      setUserEditForm({ role: 'Employee', business_unit_id: '' });
     } catch (err) {
       setError(err.error || 'Update failed');
     } finally {
-      setUserBuSaving(false);
+      setUserEditSaving(false);
     }
   }
 
@@ -587,9 +599,9 @@ export default function Admin() {
         icon_url: form.icon_url,
         target_url: form.target_url,
         target_bu_ids: form.target_bu_ids || [],
-        sso_mode: form.sso_mode === 'oidc' ? 'oidc' : 'bridge',
-        oauth_client_id: form.oauth_client_id.trim() || null,
-        oidc_redirect_uris: redirectUris,
+        sso_mode: form.sso_mode === 'oidc' ? 'oidc' : 'none',
+        oauth_client_id: form.sso_mode === 'oidc' ? (form.oauth_client_id.trim() || null) : null,
+        oidc_redirect_uris: form.sso_mode === 'oidc' ? redirectUris : [],
       };
       if (editing) {
         await apiRequest(`/api/applications/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) }, token);
@@ -637,7 +649,7 @@ export default function Admin() {
   }
 
   return (
-    <div style={styles.page}>
+    <div style={styles.page} className="admin-page">
       <header style={styles.header}>
         <h1 style={styles.title}>Admin — Downstream Hub</h1>
         <div style={styles.userRow}>
@@ -731,14 +743,14 @@ export default function Admin() {
 
           {activeSection === 'business-units' && (
         <section style={styles.section}>
-          <h2 style={styles.sectionTitle}>Business Units</h2>
-          <p style={styles.sectionDesc}>Map users and applications to departments. Apps with no BU are &quot;Global&quot; (visible to all).</p>
+          <h2 style={styles.sectionTitle}>Departments</h2>
+          <p style={styles.sectionDesc}>Map users and applications to departments. Apps with no department are &quot;Global&quot; (visible to all).</p>
           <div style={styles.toolbar}>
-            <button type="button" className="btn-secondary" onClick={openAddBu}>Add business unit</button>
+            <button type="button" className="btn-secondary" onClick={openAddBu}>Add department</button>
           </div>
           <AdminFormModal
             open={showBuForm}
-            title={editingBu ? 'Edit business unit' : 'Add business unit'}
+            title={editingBu ? 'Edit department' : 'Add department'}
             size="sm"
             onClose={closeBuForm}
             onSubmit={handleSaveBu}
@@ -790,7 +802,7 @@ export default function Admin() {
                 </div>
               }
             >
-              <p>Delete business unit &quot;{buDeleteConfirm.name}&quot;? Users and apps linked to it will be unassigned.</p>
+              <p>Delete department &quot;{buDeleteConfirm.name}&quot;? Users and apps linked to it will be unassigned.</p>
             </AdminModal>
           )}
         </section>
@@ -799,7 +811,7 @@ export default function Admin() {
           {activeSection === 'users' && (
         <section style={styles.section}>
           <h2 style={styles.sectionTitle}>Users</h2>
-          <p style={styles.sectionDesc}>Create users, assign Business Units, deactivate users, or reset passwords. Copy the new password after reset to pass it to the user.</p>
+          <p style={styles.sectionDesc}>Create users, assign roles and departments, deactivate users, or reset passwords. Copy the new password after reset to pass it to the user.</p>
           <div style={styles.toolbar}>
             <button type="button" className="btn-secondary" onClick={openAddUser}>Add user</button>
           </div>
@@ -853,7 +865,7 @@ export default function Admin() {
               onChange={(e) => setAddUserForm((f) => ({ ...f, business_unit_id: e.target.value === '_none' ? '' : e.target.value }))}
               style={styles.modalInput}
             >
-              <option value="_none">— No business unit —</option>
+              <option value="_none">— No department —</option>
               {businessUnits.map((bu) => (
                 <option key={bu.id} value={bu.id}>{bu.name}</option>
               ))}
@@ -867,10 +879,10 @@ export default function Admin() {
                 <tr>
                   <th style={styles.tableHeader}>Email</th>
                   <th style={styles.tableHeader}>Role</th>
-                  <th style={styles.tableHeader}>Business Unit</th>
+                  <th style={styles.tableHeader}>Department</th>
                   <th style={styles.tableHeader}>Status</th>
                   <th style={styles.tableHeader}>SSO</th>
-                  <th style={{ ...styles.tableHeader, width: 420 }}>Actions</th>
+                  <th style={{ ...styles.tableHeader, width: 240, minWidth: 240 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -881,20 +893,19 @@ export default function Admin() {
                     <td style={styles.tableCell}>{u.business_unit_name || '—'}</td>
                     <td style={styles.tableCell}>{u.locked_until && new Date(u.locked_until) > new Date() ? 'Locked' : '—'}</td>
                     <td style={styles.tableCell}>{u.oidc_linked ? 'Linked' : 'Not linked'}</td>
-                    <td style={{ ...styles.actionsCell, flexWrap: 'wrap' }}>
-                      <button type="button" className="btn-secondary" onClick={() => openUserBuEdit(u)}>Edit BU</button>
+                    <td style={styles.actionsCell}>
+                      <button type="button" className="btn-secondary btn-compact" onClick={() => openUserEdit(u)}>Edit</button>
                       {u.locked_until && new Date(u.locked_until) > new Date() && (
-                        <button type="button" className="btn-primary" onClick={() => handleUnlock(u)}>Unlock</button>
+                        <button type="button" className="btn-secondary btn-compact" onClick={() => handleUnlock(u)}>Unlock</button>
                       )}
-                      <button type="button" className="btn-secondary" onClick={() => setUserDeactivateConfirm(u)}>Deactivate</button>
-                      {/* SSO / More dropdown */}
-                      <div style={{ position: 'relative' }}>
+                      <button type="button" className="btn-danger btn-compact" onClick={() => setUserDeactivateConfirm(u)}>Deactivate</button>
+                      <div style={{ position: 'relative', flexShrink: 0 }}>
                         <button
                           type="button"
-                          className="btn-secondary"
+                          className="btn-secondary btn-compact"
                           onClick={() => setUserMoreMenuId(userMoreMenuId === u.id ? null : u.id)}
                         >
-                          SSO / More ▾
+                          More ▾
                         </button>
                         {userMoreMenuId === u.id && (
                           <div style={styles.moreMenu} onMouseLeave={() => setUserMoreMenuId(null)}>
@@ -913,24 +924,34 @@ export default function Admin() {
               </tbody>
             </table>
           )}
-          {userEditBu && (
+          {userEdit && (
             <AdminFormModal
-              open={!!userEditBu}
-              title="Edit Business Unit"
+              open={!!userEdit}
+              title="Edit user"
               size="sm"
-              onClose={() => { setUserEditBu(null); setUserBuForm(''); }}
-              onSubmit={handleSaveUserBu}
-              saving={userBuSaving}
+              onClose={() => { setUserEdit(null); setUserEditForm({ role: 'Employee', business_unit_id: '' }); }}
+              onSubmit={handleSaveUserEdit}
+              saving={userEditSaving}
               savingLabel="Saving…"
             >
               <p style={{ margin: '0 0 var(--space-3)', fontSize: 'var(--text-small)' }}>
-                <strong>{userEditBu.email}</strong>
+                <strong>{userEdit.email}</strong>
               </p>
+              <label style={{ display: 'block', marginBottom: 'var(--space-1)', fontSize: 'var(--text-small)' }}>Role</label>
               <select
-                value={userBuForm === null || userBuForm === undefined ? '_none' : userBuForm}
-                onChange={(e) => setUserBuForm(e.target.value === '_none' ? '' : e.target.value)}
-                style={styles.modalInput}
+                value={userEditForm.role}
+                onChange={(e) => setUserEditForm((f) => ({ ...f, role: e.target.value }))}
+                style={{ ...styles.modalInput, marginBottom: 'var(--space-3)' }}
                 autoFocus
+              >
+                <option value="Employee" disabled={userEdit.id === user?.id && userEdit.role === 'Admin'}>Employee</option>
+                <option value="Admin">Admin</option>
+              </select>
+              <label style={{ display: 'block', marginBottom: 'var(--space-1)', fontSize: 'var(--text-small)' }}>Department</label>
+              <select
+                value={userEditForm.business_unit_id === null || userEditForm.business_unit_id === undefined || userEditForm.business_unit_id === '' ? '_none' : userEditForm.business_unit_id}
+                onChange={(e) => setUserEditForm((f) => ({ ...f, business_unit_id: e.target.value === '_none' ? '' : e.target.value }))}
+                style={styles.modalInput}
               >
                 <option value="_none">None</option>
                 {businessUnits.map((bu) => (
@@ -944,7 +965,7 @@ export default function Admin() {
               onClose={() => setUserDeactivateConfirm(null)}
               footer={
                 <div style={styles.modalFooterActions}>
-                  <button type="button" className="btn-primary" onClick={handleDeactivate}>Deactivate</button>
+                  <button type="button" className="btn-danger" onClick={handleDeactivate}>Deactivate</button>
                   <button type="button" className="btn-secondary" onClick={() => setUserDeactivateConfirm(null)}>Cancel</button>
                 </div>
               }
@@ -969,7 +990,7 @@ export default function Admin() {
                   value={resetPasswordResult.temporary_password}
                   style={{ ...styles.modalInput, flex: 1, marginBottom: 0, fontFamily: 'monospace' }}
                 />
-                <button type="button" className="btn-primary" onClick={copyPasswordToClipboard}>Copy</button>
+                <button type="button" className="btn-secondary" onClick={copyPasswordToClipboard}>Copy</button>
               </div>
             </AdminModal>
           )}
@@ -978,7 +999,7 @@ export default function Admin() {
               onClose={() => setSsoPrelinkResult(null)}
               footer={
                 <div style={styles.modalFooterActions}>
-                  <button type="button" className="btn-primary" onClick={() => navigator.clipboard.writeText(ssoPrelinkResult.url)}>Copy link</button>
+                  <button type="button" className="btn-secondary" onClick={() => navigator.clipboard.writeText(ssoPrelinkResult.url)}>Copy link</button>
                   <button type="button" className="btn-secondary" onClick={() => setSsoPrelinkResult(null)}>Close</button>
                 </div>
               }
@@ -1032,37 +1053,42 @@ export default function Admin() {
         <>
         <section style={styles.section}>
           <h2 style={styles.sectionTitle}>Applications</h2>
-          <p style={styles.sectionDesc}>Add and manage internal apps. Set <strong>Target BUs</strong> to limit visibility to specific Business Units, or leave empty so everyone sees the app (Global). Use the filter below to narrow the list.</p>
+          <p style={styles.sectionDesc}>Manage internal apps and who can see them.</p>
         </section>
-        <div style={{ ...styles.toolbar, gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+        <div style={styles.appToolbar}>
           <button type="button" className="btn-secondary" onClick={openCreate}>Add application</button>
-          <input
-            type="search"
-            placeholder="Search by name or URL…"
-            value={appSearchQuery}
-            onChange={(e) => setAppSearchQuery(e.target.value)}
-            style={{ ...styles.input, maxWidth: 220, margin: 0 }}
-            aria-label="Search applications"
-          />
-          <MultiSelectDropdown
-            options={businessUnits.map((bu) => ({ id: bu.id, label: bu.name }))}
-            selected={appBuFilterIds}
-            onChange={setAppBuFilterIds}
-            placeholder="Filter by BU"
-            includeAllOption
-            includeGlobal={appBuFilterIncludeGlobal}
-            onIncludeGlobalChange={setAppBuFilterIncludeGlobal}
-          />
-          {(appBuFilterIds.length > 0 || appBuFilterIncludeGlobal || appSearchQuery) && (
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => { setAppBuFilterIds([]); setAppBuFilterIncludeGlobal(false); setAppSearchQuery(''); }}
-            >
-              Clear filters
-            </button>
-          )}
+          <div style={styles.appToolbarFilters}>
+            <input
+              type="search"
+              placeholder="Search by name or URL…"
+              value={appSearchQuery}
+              onChange={(e) => setAppSearchQuery(e.target.value)}
+              style={styles.appSearchInput}
+              aria-label="Search applications"
+            />
+            <MultiSelectDropdown
+              options={businessUnits.map((bu) => ({ id: bu.id, label: bu.name }))}
+              selected={appBuFilterIds}
+              onChange={setAppBuFilterIds}
+              placeholder="Filter by Department"
+              includeAllOption
+              includeGlobal={appBuFilterIncludeGlobal}
+              onIncludeGlobalChange={setAppBuFilterIncludeGlobal}
+            />
+            {hasAppFilters && (
+              <button type="button" className="btn-secondary" onClick={clearAppFilters}>
+                Clear filters
+              </button>
+            )}
+          </div>
         </div>
+        {!loading && applications.length > 0 && (
+          <p style={styles.appResultCount}>
+            {filteredApplications.length === applications.length
+              ? `${applications.length} application${applications.length === 1 ? '' : 's'}`
+              : `Showing ${filteredApplications.length} of ${applications.length} applications`}
+          </p>
+        )}
 
         <AdminFormModal
           open={showForm}
@@ -1107,38 +1133,15 @@ export default function Admin() {
               style={styles.modalInput}
             />
             <label style={styles.label}>Application icon</label>
-            <input
-              type="file"
-              accept=".svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp"
-              onChange={handleIconFile}
-              disabled={iconUploading || saving}
-              style={styles.fileInput}
+            <ApplicationIconField
+              iconUrl={form.icon_url}
+              appName={form.name}
+              onIconUrlChange={(icon_url) => setForm((f) => ({ ...f, icon_url }))}
+              onFileSelect={handleIconFile}
+              uploading={iconUploading}
+              disabled={saving}
             />
-            <p style={styles.helpText}>PNG, JPEG, WebP, or SVG — max 100 KB. You can also paste an image URL below.</p>
-            {iconUploading && <p style={styles.helpText}>Uploading…</p>}
-            {form.icon_url ? (
-              <div style={styles.iconPreviewRow}>
-                {resolveIconSrc(form.icon_url) ? (
-                  <img src={resolveIconSrc(form.icon_url)} alt="" style={styles.iconPreviewImg} />
-                ) : (
-                  <span style={styles.helpText}>Invalid URL — clear or fix below.</span>
-                )}
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => setForm((f) => ({ ...f, icon_url: '' }))}
-                >
-                  Remove icon
-                </button>
-              </div>
-            ) : null}
-            <input
-              placeholder="Icon URL (optional, if not uploading a file)"
-              value={form.icon_url}
-              onChange={(e) => setForm((f) => ({ ...f, icon_url: e.target.value }))}
-              style={styles.modalInput}
-            />
-            <label style={styles.label}>Target Business Units</label>
+            <label style={styles.label}>Target Departments</label>
             <MultiSelectDropdown
               options={businessUnits.map((bu) => ({ id: bu.id, label: bu.name }))}
               selected={form.target_bu_ids || []}
@@ -1146,22 +1149,26 @@ export default function Admin() {
               placeholder="Global (all users)"
             />
             <p style={styles.helpText}>
-              Leave empty to make this app visible to <strong>all users</strong> (Global). Select one or more BUs to restrict visibility.
+              Leave empty to make this app visible to <strong>all users</strong> (Global). Select one or more departments to restrict visibility.
             </p>
             <div style={styles.subSection}>
-              <h4 style={styles.subSectionTitle}>OIDC Setting</h4>
+              <h4 style={styles.subSectionTitle}>SSO settings</h4>
               <p style={styles.helpText}>
-                Configure these when this app uses strict OIDC SSO.
+                {form.sso_mode === 'oidc'
+                  ? 'Configure these when this app uses strict OIDC SSO.'
+                  : 'Opens the target URL directly. No SSO hand-off.'}
               </p>
               <label style={styles.label}>SSO Mode</label>
               <select
-                value={form.sso_mode || 'bridge'}
+                value={form.sso_mode || 'none'}
                 onChange={(e) => setForm((f) => ({ ...f, sso_mode: e.target.value }))}
                 style={styles.modalInput}
               >
-                <option value="bridge">Bridge (legacy)</option>
+                <option value="none">Without SSO</option>
                 <option value="oidc">OIDC (strict)</option>
               </select>
+              {form.sso_mode === 'oidc' && (
+                <>
               <label style={styles.label}>OAuth Client ID</label>
               <input
                 placeholder="e.g. jps-web-client"
@@ -1178,50 +1185,63 @@ export default function Admin() {
                 style={styles.modalTextarea}
               />
               <p style={styles.helpText}>You can enter one URI per line (or comma-separated).</p>
+                </>
+              )}
             </div>
         </AdminFormModal>
 
         {loading ? (
           <p>Loading…</p>
+        ) : applications.length === 0 ? (
+          <div style={styles.emptyState}>
+            <p style={styles.emptyStateText}>No applications yet. Add your first internal app to get started.</p>
+            <button type="button" className="btn-secondary" onClick={openCreate}>Add application</button>
+          </div>
         ) : (
           <table style={styles.table}>
             <thead>
               <tr>
-                <th style={{ ...styles.tableHeader, width: 56 }}>Icon</th>
-                <th style={styles.tableHeader}>Name</th>
+                <th style={styles.tableHeader}>App</th>
                 <th style={styles.tableHeader}>Target URL</th>
-                <th style={styles.tableHeader}>Target BU</th>
-                <th style={{ ...styles.tableHeader, width: 150, minWidth: 150 }}>Actions</th>
+                <th style={styles.tableHeader}>Visibility</th>
+                <th style={{ ...styles.tableHeader, width: 80 }}>SSO</th>
+                <th style={{ ...styles.tableHeader, width: 130, minWidth: 130 }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {filteredApplications.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ ...styles.tableCell, textAlign: 'center', color: 'var(--color-text-steel)', padding: 'var(--space-4)' }}>
-                    {applications.length === 0 ? 'No applications yet.' : 'No applications match the current filters.'}
+                  <td colSpan={5} style={{ ...styles.tableCell, textAlign: 'center', padding: 'var(--space-5)' }}>
+                    <p style={styles.emptyFilterText}>No applications match your search or filters.</p>
+                    <button type="button" className="btn-secondary" onClick={clearAppFilters}>Clear filters</button>
                   </td>
                 </tr>
               ) : filteredApplications.map((app) => {
                 const iconSrc = resolveIconSrc(app.icon_url);
                 return (
                 <tr key={app.id}>
-                  <td style={styles.tableCellIcon}>
-                    {iconSrc ? (
-                      <img src={iconSrc} alt="" style={styles.tableIconImg} />
-                    ) : (
-                      <span style={styles.tableIconInitials}>{applicationInitials(app.name)}</span>
-                    )}
+                  <td style={styles.tableCell}>
+                    <div style={styles.appCellInner}>
+                      {iconSrc ? (
+                        <img src={iconSrc} alt="" style={styles.tableIconImg} />
+                      ) : (
+                        <span style={styles.tableIconInitials}>{applicationInitials(app.name)}</span>
+                      )}
+                      <span style={styles.appName}>{app.name}</span>
+                    </div>
                   </td>
-                  <td style={styles.tableCell}>{app.name}</td>
-                  <td style={{ ...styles.tableCell, ...styles.urlCell }}>{app.target_url}</td>
+                  <td style={{ ...styles.tableCell, ...styles.urlCell }} title={app.target_url}>{app.target_url}</td>
                   <td style={styles.tableCell}>
                     {Array.isArray(app.target_bu_names) && app.target_bu_names.length > 0
                       ? app.target_bu_names.join(', ')
                       : (app.target_bu_name || 'Global')}
                   </td>
+                  <td style={styles.tableCell}>
+                    <SsoBadge ssoMode={app.sso_mode} />
+                  </td>
                   <td style={styles.actionsCell}>
                     <button type="button" className="btn-secondary" onClick={() => openEdit(app)}>Edit</button>
-                    <button type="button" className="btn-danger" onClick={() => setDeleteConfirm(app)}>Delete</button>
+                    <button type="button" style={styles.deleteLinkBtn} onClick={() => setDeleteConfirm(app)}>Delete</button>
                   </td>
                 </tr>
                 );
@@ -1323,7 +1343,7 @@ export default function Admin() {
                 </div>
               </div>
               <div style={styles.formActions}>
-                <button type="submit" className="btn-primary" disabled={policySaving}>{policySaving ? 'Saving…' : 'Save'}</button>
+                <button type="submit" className="btn-secondary" disabled={policySaving}>{policySaving ? 'Saving…' : 'Save'}</button>
               </div>
             </form>
           )}
@@ -1351,6 +1371,77 @@ const styles = {
   error: { padding: 'var(--space-3)', background: '#FEE2E2', color: 'var(--color-destructive)', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-small)' },
   success: { padding: 'var(--space-3)', background: '#DCFCE7', color: '#166534', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-small)' },
   toolbar: { marginBottom: 'var(--space-4)', position: 'relative', zIndex: 1 },
+  appToolbar: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 'var(--space-3)',
+    marginBottom: 'var(--space-3)',
+    position: 'relative',
+    zIndex: 1,
+  },
+  appToolbarFilters: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 'var(--space-2)',
+    marginLeft: 'auto',
+  },
+  appSearchInput: {
+    width: 220,
+    minWidth: 160,
+    padding: 'var(--space-2) var(--space-3)',
+    border: '1px solid var(--color-border-medium)',
+    borderRadius: 'var(--radius-md)',
+    fontSize: 'var(--text-small)',
+  },
+  appResultCount: {
+    margin: '0 0 var(--space-3)',
+    fontSize: 'var(--text-xs)',
+    color: 'var(--color-text-steel)',
+  },
+  emptyState: {
+    background: 'var(--color-bg-white)',
+    border: '1px solid var(--color-border-light)',
+    borderRadius: 'var(--radius-md)',
+    padding: 'var(--space-6) var(--space-4)',
+    textAlign: 'center',
+    boxShadow: 'var(--shadow-sm)',
+  },
+  emptyStateText: {
+    margin: '0 0 var(--space-4)',
+    fontSize: 'var(--text-small)',
+    color: 'var(--color-text-steel)',
+  },
+  emptyFilterText: {
+    margin: '0 0 var(--space-3)',
+    fontSize: 'var(--text-small)',
+    color: 'var(--color-text-steel)',
+  },
+  appCellInner: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 'var(--space-3)',
+    minWidth: 0,
+  },
+  appName: {
+    fontWeight: 'var(--font-weight-medium)',
+    color: 'var(--color-text-charcoal)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  deleteLinkBtn: {
+    padding: 'var(--space-2) var(--space-3)',
+    background: 'none',
+    border: 'none',
+    borderRadius: 'var(--radius-md)',
+    fontSize: 'var(--text-small)',
+    color: 'var(--color-destructive)',
+    cursor: 'pointer',
+    fontFamily: 'var(--font-primary)',
+  },
   primaryBtn: {},
   form: { background: 'var(--color-bg-white)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-4)', boxShadow: 'var(--shadow-md)' },
   formTitle: { margin: '0 0 var(--space-3)', fontSize: 'var(--text-h3)', fontFamily: 'var(--font-heading)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
@@ -1362,7 +1453,7 @@ const styles = {
   table: { width: '100%', background: 'var(--color-bg-white)', borderRadius: 'var(--radius-md)', borderCollapse: 'collapse', boxShadow: 'var(--shadow-sm)', border: '1px solid var(--color-border-light)' },
   tableHeader: { borderBottom: '1px solid var(--color-border-light)', padding: 'var(--space-2) var(--space-3)', textAlign: 'left', fontWeight: 'var(--font-weight-medium)', fontSize: 'var(--text-small)', color: 'var(--color-text-charcoal)' },
   tableCell: { padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--color-border-light)', fontSize: 'var(--text-small)' },
-  actionsCell: { padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--color-border-light)', fontSize: 'var(--text-small)', display: 'flex', flexDirection: 'row', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'nowrap' },
+  actionsCell: { padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--color-border-light)', fontSize: 'var(--text-small)', display: 'flex', flexDirection: 'row', gap: 'var(--space-1)', alignItems: 'center', flexWrap: 'nowrap' },
   urlCell: { fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   section: { marginBottom: 'var(--space-6)' },
   sectionTitle: { margin: '0 0 var(--space-1)', fontSize: 'var(--text-h3)', fontFamily: 'var(--font-heading)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
@@ -1378,15 +1469,11 @@ const styles = {
   policyInputCol: { flex: 1, minWidth: 0 },
   policyLabel: { display: 'block', fontSize: 'var(--text-small)', fontWeight: 'var(--font-weight-medium)', color: 'var(--color-text-charcoal)', paddingTop: 'var(--space-2)' },
   policyInput: { width: '100%', maxWidth: 120, padding: 'var(--space-2) var(--space-3)', border: '1px solid var(--color-border-medium)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-base)' },
-  fileInput: { display: 'block', marginBottom: 'var(--space-2)', fontSize: 'var(--text-small)', maxWidth: 400 },
   helpText: { margin: '0 0 var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)', maxWidth: 480 },
-  iconPreviewRow: { display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', flexWrap: 'wrap' },
-  iconPreviewImg: { width: 48, height: 48, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--color-border-light)' },
   subSection: { marginTop: 'var(--space-2)', marginBottom: 'var(--space-2)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--color-border-light)' },
   subSectionTitle: { margin: '0 0 var(--space-2)', fontSize: 'var(--text-base)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-charcoal)' },
   textarea: { display: 'block', width: '100%', maxWidth: 520, padding: 'var(--space-2) var(--space-3)', marginBottom: 'var(--space-3)', border: '1px solid var(--color-border-medium)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-base)', resize: 'vertical', fontFamily: 'inherit' },
-  tableCellIcon: { padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--color-border-light)', verticalAlign: 'middle', width: 56 },
-  tableIconImg: { width: 36, height: 36, borderRadius: 8, objectFit: 'cover', display: 'block' },
+  tableIconImg: { width: 36, height: 36, borderRadius: 8, objectFit: 'cover', display: 'block', flexShrink: 0 },
   tableIconInitials: {
     display: 'inline-flex',
     width: 36,
@@ -1399,6 +1486,7 @@ const styles = {
     fontWeight: 700,
     fontSize: 11,
     fontFamily: 'var(--font-heading, system-ui, sans-serif)',
+    flexShrink: 0,
   },
   moreMenu: {
     position: 'absolute',
