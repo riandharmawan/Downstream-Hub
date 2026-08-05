@@ -9,6 +9,7 @@ import ApplicationIconField from '../components/admin/ApplicationIconField';
 import SsoBadge from '../components/SsoBadge';
 import AdminModal from '../components/admin/AdminModal';
 import AdminFormModal from '../components/admin/AdminFormModal';
+import HubLogo from '../components/HubLogo';
 
 const SECTIONS = [
   { id: 'domains', label: 'Domains', path: 'domains' },
@@ -16,6 +17,27 @@ const SECTIONS = [
   { id: 'users', label: 'Users', path: 'users' },
   { id: 'applications', label: 'Applications', path: 'applications' },
   { id: 'password-policy', label: 'Password policy', path: 'password-policy' },
+];
+
+/** IANA timezones for login MFA calendar-day bypass (Admin dropdown). */
+const LOGIN_MFA_BYPASS_TIMEZONES = [
+  { value: 'UTC', label: 'UTC — Coordinated Universal Time' },
+  { value: 'Asia/Jakarta', label: 'Asia/Jakarta — WIB (UTC+7)' },
+  { value: 'Asia/Makassar', label: 'Asia/Makassar — WITA (UTC+8)' },
+  { value: 'Asia/Jayapura', label: 'Asia/Jayapura — WIT (UTC+9)' },
+  { value: 'Asia/Singapore', label: 'Asia/Singapore — SGT (UTC+8)' },
+  { value: 'Asia/Kuala_Lumpur', label: 'Asia/Kuala_Lumpur — MYT (UTC+8)' },
+  { value: 'Asia/Bangkok', label: 'Asia/Bangkok — ICT (UTC+7)' },
+  { value: 'Asia/Manila', label: 'Asia/Manila — PHT (UTC+8)' },
+  { value: 'Asia/Hong_Kong', label: 'Asia/Hong_Kong — HKT (UTC+8)' },
+  { value: 'Asia/Tokyo', label: 'Asia/Tokyo — JST (UTC+9)' },
+  { value: 'Asia/Shanghai', label: 'Asia/Shanghai — CST (UTC+8)' },
+  { value: 'Asia/Kolkata', label: 'Asia/Kolkata — IST (UTC+5:30)' },
+  { value: 'Europe/London', label: 'Europe/London — GMT/BST' },
+  { value: 'Europe/Berlin', label: 'Europe/Berlin — CET/CEST' },
+  { value: 'America/New_York', label: 'America/New_York — ET' },
+  { value: 'America/Los_Angeles', label: 'America/Los_Angeles — PT' },
+  { value: 'Australia/Sydney', label: 'Australia/Sydney — AEST/AEDT' },
 ];
 
 export default function Admin() {
@@ -90,8 +112,12 @@ export default function Admin() {
   const [passwordHistoryCount, setPasswordHistoryCount] = useState(5);
   const [maxLoginAttempts, setMaxLoginAttempts] = useState(5);
   const [lockoutDurationMins, setLockoutDurationMins] = useState(30);
+  const [loginMfaBypassMode, setLoginMfaBypassMode] = useState('rolling_24h');
+  const [loginMfaBypassHours, setLoginMfaBypassHours] = useState(24);
+  const [loginMfaBypassTimezone, setLoginMfaBypassTimezone] = useState('UTC');
   const [policyLoading, setPolicyLoading] = useState(true);
   const [policySaving, setPolicySaving] = useState(false);
+  const [policySuccess, setPolicySuccess] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [userMoreMenuId, setUserMoreMenuId] = useState(null);
 
@@ -146,6 +172,8 @@ export default function Admin() {
   // Password policy — load only when on password-policy section
   useEffect(() => {
     if (user?.role !== 'Admin' || activeSection !== 'password-policy') return;
+    setPolicyLoading(true);
+    setPolicySuccess('');
     apiRequest('/api/settings/password-policy', {}, token)
       .then((data) => {
         setPasswordExpiryDays(data.password_expiry_days ?? 0);
@@ -157,8 +185,14 @@ export default function Admin() {
         setPasswordHistoryCount(data.password_history_count ?? 5);
         setMaxLoginAttempts(data.max_login_attempts ?? 5);
         setLockoutDurationMins(data.lockout_duration_mins ?? 30);
+        setLoginMfaBypassMode(data.login_mfa_bypass_mode ?? 'rolling_24h');
+        setLoginMfaBypassHours(data.login_mfa_bypass_hours ?? 24);
+        setLoginMfaBypassTimezone(data.login_mfa_bypass_timezone ?? 'UTC');
       })
-      .catch(() => setPasswordExpiryDays(0))
+      .catch((err) => {
+        setPasswordExpiryDays(0);
+        setError(err.error || 'Failed to load password policy. Restart the backend so migrations can run.');
+      })
       .finally(() => setPolicyLoading(false));
   }, [token, user?.role, activeSection]);
 
@@ -205,6 +239,14 @@ export default function Admin() {
 
   const hasAppFilters = appBuFilterIds.length > 0 || appBuFilterIncludeGlobal || !!appSearchQuery.trim();
 
+  const loginMfaTimezoneOptions = useMemo(() => {
+    const known = LOGIN_MFA_BYPASS_TIMEZONES.some((tz) => tz.value === loginMfaBypassTimezone);
+    if (loginMfaBypassTimezone && !known) {
+      return [{ value: loginMfaBypassTimezone, label: `${loginMfaBypassTimezone} (current)` }, ...LOGIN_MFA_BYPASS_TIMEZONES];
+    }
+    return LOGIN_MFA_BYPASS_TIMEZONES;
+  }, [loginMfaBypassTimezone]);
+
   function clearAppFilters() {
     setAppBuFilterIds([]);
     setAppBuFilterIncludeGlobal(false);
@@ -214,6 +256,7 @@ export default function Admin() {
   async function handleSavePasswordPolicy(e) {
     e.preventDefault();
     setError('');
+    setPolicySuccess('');
     setPolicySaving(true);
     try {
       const payload = {
@@ -226,8 +269,16 @@ export default function Admin() {
         password_history_count: Math.max(0, Math.min(24, parseInt(String(passwordHistoryCount), 10) || 5)),
         max_login_attempts: Math.max(1, Math.min(10, parseInt(String(maxLoginAttempts), 10) || 5)),
         lockout_duration_mins: Math.max(1, Math.min(1440, parseInt(String(lockoutDurationMins), 10) || 30)),
+        login_mfa_bypass_mode: loginMfaBypassMode === 'calendar_day' ? 'calendar_day' : 'rolling_24h',
+        login_mfa_bypass_hours: Math.max(1, Math.min(168, parseInt(String(loginMfaBypassHours), 10) || 24)),
+        login_mfa_bypass_timezone: String(loginMfaBypassTimezone || 'UTC').trim().slice(0, 64) || 'UTC',
       };
       const data = await apiRequest('/api/settings/password-policy', { method: 'PUT', body: JSON.stringify(payload) }, token);
+      if (data.login_mfa_bypass_mode == null) {
+        setError('Password policy saved partially. Restart/rebuild the backend so login MFA settings can persist.');
+      } else {
+        setPolicySuccess('Password policy saved.');
+      }
       setPasswordExpiryDays(data.password_expiry_days ?? 0);
       setMinPasswordLength(data.min_password_length ?? 6);
       setRequireUppercase(data.require_uppercase ?? true);
@@ -237,8 +288,11 @@ export default function Admin() {
       setPasswordHistoryCount(data.password_history_count ?? 5);
       setMaxLoginAttempts(data.max_login_attempts ?? 5);
       setLockoutDurationMins(data.lockout_duration_mins ?? 30);
+      setLoginMfaBypassMode(data.login_mfa_bypass_mode ?? 'rolling_24h');
+      setLoginMfaBypassHours(data.login_mfa_bypass_hours ?? 24);
+      setLoginMfaBypassTimezone(data.login_mfa_bypass_timezone ?? 'UTC');
     } catch (err) {
-      setError(err.error || 'Failed to save');
+      setError(err.error || 'Failed to save password policy');
     } finally {
       setPolicySaving(false);
     }
@@ -651,7 +705,7 @@ export default function Admin() {
   return (
     <div style={styles.page} className="admin-page">
       <header style={styles.header}>
-        <h1 style={styles.title}>Admin — Downstream Hub</h1>
+        <HubLogo title="Admin — Downstream Hub" titleStyle={styles.title} iconSize={36} />
         <div style={styles.userRow}>
           <Link to="/" style={styles.backLink}>Dashboard</Link>
           <span style={styles.userEmail}>{user?.email}</span>
@@ -1277,6 +1331,7 @@ export default function Admin() {
             <p>Loading…</p>
           ) : (
             <form onSubmit={handleSavePasswordPolicy} style={styles.form}>
+              {policySuccess && <div style={styles.success}>{policySuccess}</div>}
               <div style={styles.policyGroupFirst}>
                 <h3 style={styles.policyGroupTitle}>Password expiry</h3>
                 <div style={styles.policyRow}>
@@ -1341,6 +1396,49 @@ export default function Admin() {
                     <input type="number" min={1} max={1440} value={lockoutDurationMins} onChange={(e) => setLockoutDurationMins(parseInt(e.target.value, 10) || 30)} style={styles.policyInput} />
                   </div>
                 </div>
+              </div>
+              <div style={styles.policyGroup}>
+                <h3 style={styles.policyGroupTitle}>Login MFA bypass</h3>
+                <p style={styles.sectionDesc}>After a user verifies via email magic link, the same browser can skip MFA for the configured window.</p>
+                <div style={styles.policyRow}>
+                  <div style={styles.policyLabelCol}>
+                    <label style={styles.policyLabel}>Bypass mode</label>
+                  </div>
+                  <div style={styles.policyInputCol}>
+                    <select value={loginMfaBypassMode} onChange={(e) => setLoginMfaBypassMode(e.target.value)} style={styles.policyInput}>
+                      <option value="rolling_24h">Rolling hours from last verification</option>
+                      <option value="calendar_day">Same calendar day</option>
+                    </select>
+                  </div>
+                </div>
+                {loginMfaBypassMode === 'rolling_24h' && (
+                  <div style={styles.policyRow}>
+                    <div style={styles.policyLabelCol}>
+                      <label style={styles.policyLabel}>Bypass window (hours)</label>
+                    </div>
+                    <div style={styles.policyInputCol}>
+                      <input type="number" min={1} max={168} value={loginMfaBypassHours} onChange={(e) => setLoginMfaBypassHours(parseInt(e.target.value, 10) || 24)} style={styles.policyInput} />
+                    </div>
+                  </div>
+                )}
+                {loginMfaBypassMode === 'calendar_day' && (
+                  <div style={styles.policyRow}>
+                    <div style={styles.policyLabelCol}>
+                      <label style={styles.policyLabel}>Calendar timezone (IANA)</label>
+                    </div>
+                    <div style={styles.policyInputCol}>
+                      <select
+                        value={loginMfaBypassTimezone}
+                        onChange={(e) => setLoginMfaBypassTimezone(e.target.value)}
+                        style={styles.policyInput}
+                      >
+                        {loginMfaTimezoneOptions.map((tz) => (
+                          <option key={tz.value} value={tz.value}>{tz.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
               <div style={styles.formActions}>
                 <button type="submit" className="btn-secondary" disabled={policySaving}>{policySaving ? 'Saving…' : 'Save'}</button>

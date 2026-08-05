@@ -212,6 +212,31 @@ async function sendOtpEmail({ to, otp, ttlSeconds }) {
 }
 
 /**
+ * @param {{ to: string, loginUrl: string, ttlMinutes: number }} opts
+ */
+async function sendLoginMagicLinkEmail({ to, loginUrl, ttlMinutes }) {
+  const mins = Math.max(1, Math.floor(ttlMinutes || 15));
+  const subject = 'Your Downstream Hub sign-in link';
+  const text = `Use this link to complete sign-in (expires in ${mins} minute(s)):\n\n${loginUrl}\n\nIf you did not attempt to sign in, you can ignore this email.`;
+  const html = `<p>Use this link to complete sign-in (expires in ${mins} minute(s)):</p><p><a href="${escapeHtml(loginUrl)}">Complete sign-in</a></p><p>If you did not attempt to sign in, you can ignore this email.</p>`;
+
+  if (!smtpConfigured()) {
+    console.info('[mailer] SMTP not configured; login magic link (dev only):');
+    console.info(loginUrl);
+    return { skipped: true };
+  }
+  const info = await sendViaSmtp({
+    from: fromAddress(),
+    to,
+    subject,
+    text,
+    html,
+  });
+  console.info('[mailer] Login magic link email sent via SMTP', info.messageId || '');
+  return { skipped: false };
+}
+
+/**
  * @param {{ to: string, verifyUrl: string }} opts
  */
 async function sendSsoLinkVerificationEmail({ to, verifyUrl }) {
@@ -254,6 +279,7 @@ module.exports = {
   sendPasswordResetEmail,
   sendPasswordChangedEmail,
   sendOtpEmail,
+  sendLoginMagicLinkEmail,
   sendSsoLinkVerificationEmail,
   smtpConfigured,
   closeTransport,

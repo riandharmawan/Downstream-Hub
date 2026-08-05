@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
+import HubLogo from '../components/HubLogo';
 
 export default function Login() {
   const location = useLocation();
@@ -9,9 +10,10 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [mfaChallenge, setMfaChallenge] = useState(null);
+  const [magicLinkPending, setMagicLinkPending] = useState(null);
   const [otp, setOtp] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const { login, verifyMfa } = useAuth();
+  const { login, verifyMfa, resendMagicLink } = useAuth();
   const navigate = useNavigate();
   const successMessage = location.state?.message;
 
@@ -39,8 +41,15 @@ export default function Login() {
     setSubmitting(true);
     try {
       const result = await login(email, password);
+      if (result?.magic_link_required) {
+        setMagicLinkPending(result);
+        setMfaChallenge(null);
+        setError('');
+        return;
+      }
       if (result?.mfa_required) {
         setMfaChallenge(result);
+        setMagicLinkPending(null);
         setError('');
         return;
       }
@@ -75,12 +84,25 @@ export default function Login() {
     }
   }
 
+  async function handleResendMagicLink() {
+    setSubmitting(true);
+    setError('');
+    try {
+      const result = await resendMagicLink(email, password, magicLinkPending?.pending_id);
+      setMagicLinkPending(result);
+    } catch (err) {
+      setError(err.error || 'Failed to resend sign-in link');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <h1 style={styles.title}>Downstream Hub</h1>
+        <HubLogo titleStyle={styles.title} iconSize={44} style={{ marginBottom: 'var(--space-1)' }} />
         <p style={styles.subtitle}>Sign in to access your tools</p>
-        {!mfaChallenge ? (
+        {!mfaChallenge && !magicLinkPending ? (
         <form onSubmit={handleSubmit} style={styles.form}>
           {successMessage && <div style={styles.success}>{successMessage}</div>}
           {error && <div style={styles.error}>{error}</div>}
@@ -106,6 +128,19 @@ export default function Login() {
             {submitting ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+        ) : magicLinkPending ? (
+        <div style={styles.form}>
+          <div style={styles.success}>
+            {magicLinkPending.message || 'We sent a sign-in link to your email. Open it on this device to continue.'}
+          </div>
+          {error && <div style={styles.error}>{error}</div>}
+          <button type="button" disabled={submitting} className="btn-secondary" style={styles.button} onClick={handleResendMagicLink}>
+            {submitting ? 'Sending…' : 'Resend sign-in link'}
+          </button>
+          <button type="button" className="btn-secondary" style={styles.button} onClick={() => { setMagicLinkPending(null); setError(''); }}>
+            Back to sign in
+          </button>
+        </div>
         ) : (
         <form onSubmit={handleMfaSubmit} style={styles.form}>
           <div style={styles.success}>Verification code sent to your email.</div>

@@ -23,7 +23,7 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-    if (data.mfa_required) return data;
+    if (data.mfa_required || data.magic_link_required) return data;
     setToken(data.token || null);
     setUser(data.user || null);
     return data;
@@ -37,6 +37,23 @@ export function AuthProvider({ children }) {
     setToken(data.token || null);
     setUser(data.user || null);
     return data;
+  };
+
+  const loginWithMagicToken = async (rawToken) => {
+    const data = await apiRequest('/api/auth/magic-link/verify', {
+      method: 'POST',
+      body: JSON.stringify({ token: rawToken }),
+    });
+    setToken(data.token || null);
+    setUser(data.user || null);
+    return data;
+  };
+
+  const resendMagicLink = async (email, password, pending_id) => {
+    return apiRequest('/api/auth/magic-link/resend', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, pending_id }),
+    });
   };
 
   const setSession = (newToken, newUser) => {
@@ -65,7 +82,10 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, verifyMfa, register, logout, setSession }}>
+    <AuthContext.Provider value={{
+      user, token, loading, login, verifyMfa, loginWithMagicToken, resendMagicLink, register, logout, setSession,
+    }}
+    >
       {children}
     </AuthContext.Provider>
   );

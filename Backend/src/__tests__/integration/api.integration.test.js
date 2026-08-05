@@ -5,6 +5,9 @@
  */
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../../../.env') });
+if (process.env.LOGIN_MFA_ENABLED === undefined) {
+  process.env.LOGIN_MFA_ENABLED = '0';
+}
 
 const crypto = require('crypto');
 const request = require('supertest');

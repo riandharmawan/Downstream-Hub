@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
+import HubLogo from '../components/HubLogo';
 
 export default function Register() {
   const [email, setEmail] = useState('');
@@ -48,7 +49,7 @@ export default function Register() {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <h1 style={styles.title}>Downstream Hub</h1>
+        <HubLogo titleStyle={styles.title} iconSize={44} style={{ marginBottom: 'var(--space-1)' }} />
         <p style={styles.subtitle}>Create an account</p>
         <form onSubmit={handleSubmit} style={styles.form}>
           {error && <div style={styles.error}>{error}</div>}

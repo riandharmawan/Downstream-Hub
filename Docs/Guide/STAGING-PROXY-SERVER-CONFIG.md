@@ -82,8 +82,39 @@ From a browser on allowed network:
 4. Verify `issuer` and endpoint URLs match staging public URL.
 5. Complete downstream app login flow and verify ID token validation via JWKS.
 
-## 5) Troubleshooting
+## 5) Domain name access (e.g. test-dwshub.kpndomain.com)
+
+If users open the Hub via a DNS name instead of `172.28.92.56:3010`, the frontend **must not** call the API on a different host. Rebuild with **same-origin** API (empty `VITE_API_URL`):
+
+```bash
+# On app server .56
+cd /opt/downstream-hub
+git pull origin sit
+PUBLIC_URL=http://test-dwshub.kpndomain.com VITE_API_URL= sudo bash deploy/rebuild-frontend-staging-proxy.sh
+```
+
+On backend `.57`, set public URLs to the domain and allow HTTP session cookies:
+
+```env
+SSO_ISSUER=http://test-dwshub.kpndomain.com
+API_PUBLIC_URL=http://test-dwshub.kpndomain.com
+AUTH_COOKIE_SECURE=0
+```
+
+Recreate the backend container after editing `.env`. Users must **log in again** on the domain so cookies are set for the correct host.
+
+Ensure Nginx proxies **`/uploads/`** to the backend (included in `deploy/nginx-frontend-with-api-proxy.conf`) so uploaded icons display.
+
+Verify in browser DevTools → Network:
+
+- Page URL: `http://test-dwshub.kpndomain.com/...`
+- API calls: `http://test-dwshub.kpndomain.com/api/...` (not `172.28.92.56:3010`)
+- Icon URLs: `http://test-dwshub.kpndomain.com/uploads/app-icons/...`
+
+## 6) Troubleshooting
 
 - Timeout from PC to `.57:4000` is expected after lock-down if client is not in allow-list.
-- If browser still calls `.57:4000`, frontend was built with old `VITE_API_URL`; rebuild frontend image with `VITE_API_URL=http://172.28.92.56:3010`.
+- If browser still calls `.57:4000`, frontend was built with old `VITE_API_URL`; rebuild frontend with empty `VITE_API_URL` (same-origin) or matching domain.
+- **401 on `/api/auth/me` when using a domain:** frontend was built with `VITE_API_URL=http://172.28.92.56:3010` while the page is on another host — session cookies are not sent. Rebuild with `VITE_API_URL=` and log in again on the domain.
+- **401 after login on HTTP staging:** set `AUTH_COOKIE_SECURE=0` in backend `.env` when not using HTTPS.
 - If proxy path fails, run `sudo nginx -t` and check `sudo journalctl -u nginx -n 100 --no-pager`.

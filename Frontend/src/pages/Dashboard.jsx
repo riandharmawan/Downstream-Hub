@@ -5,6 +5,7 @@ import { apiRequest } from '../api';
 import { applicationInitials } from '../utils/applicationInitials';
 import { resolveIconSrc } from '../utils/resolveIconSrc';
 import SsoBadge from '../components/SsoBadge';
+import HubLogo from '../components/HubLogo';
 
 export default function Dashboard() {
   const { user, token, logout } = useAuth();
@@ -55,7 +56,7 @@ export default function Dashboard() {
   return (
     <div style={styles.page}>
       <header style={styles.header}>
-        <h1 style={styles.title}>Downstream Hub</h1>
+        <HubLogo titleStyle={styles.title} iconSize={36} />
         <div style={styles.userRow}>
           <span style={styles.userEmail}>{user?.email}</span>
           {user?.business_unit_name != null && user.business_unit_name !== '' && (

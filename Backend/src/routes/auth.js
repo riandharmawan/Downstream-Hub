@@ -18,9 +18,11 @@ const usersDb = require('../db/usersDb');
 const ssoLinkDb = require('../db/ssoLinkDb');
 const authSessionsDb = require('../db/authSessionsDb');
 const mfaDb = require('../db/mfaDb');
+const magicLinkDb = require('../db/magicLinkDb');
 const ssoLinkService = require('../services/ssoLinkService');
 const { validatePassword } = require('../lib/passwordValidation');
 const { signAccessToken } = require('../lib/authToken');
+const deviceTrust = require('../lib/deviceTrust');
 const { authMiddleware } = require('../middleware/auth');
 const { auditLog, getClientIp } = require('../middleware/audit');
 const mailer = require('../lib/mailer');
@@ -32,10 +34,29 @@ const SESSION_TTL_MS = Math.max(10 * 60 * 1000, parseInt(process.env.AUTH_SESSIO
 const MFA_CHALLENGE_TTL_SECONDS = Math.max(60, parseInt(process.env.MFA_CHALLENGE_TTL_SECONDS || '300', 10));
 const MFA_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.MFA_MAX_ATTEMPTS || '5', 10));
 const MFA_ENABLED = process.env.MFA_ENABLED === '1';
+
+function isLoginMfaEnabled() {
+  return process.env.LOGIN_MFA_ENABLED !== '0' && process.env.LOGIN_MFA_ENABLED !== 'false';
+}
+const LOGIN_MAGIC_LINK_TTL_MINUTES = Math.max(5, Math.min(60, parseInt(process.env.LOGIN_MAGIC_LINK_TTL_MINUTES || '15', 10)));
+const LOGIN_MAGIC_LINK_TTL_MS = LOGIN_MAGIC_LINK_TTL_MINUTES * 60 * 1000;
 const SSO_LINK_AUTO_EMAIL_VERIFY_ENABLED = process.env.SSO_LINK_AUTO_EMAIL_VERIFY_ENABLED !== '0';
 
-function setSessionCookies(res, sessionToken, csrfToken) {
-  const secure = process.env.NODE_ENV === 'production';
+function cookieSecureFlag(req) {
+  if (process.env.AUTH_COOKIE_SECURE === '1') return true;
+  if (process.env.AUTH_COOKIE_SECURE === '0') return false;
+  if (req) {
+    if (req.secure) return true;
+    const proto = req.headers['x-forwarded-proto'];
+    if (proto) {
+      return String(proto).split(',')[0].trim().toLowerCase() === 'https';
+    }
+  }
+  return false;
+}
+
+function setSessionCookies(req, res, sessionToken, csrfToken) {
+  const secure = cookieSecureFlag(req);
   const sameSite = secure ? 'none' : 'lax';
   const base = {
     secure,
@@ -47,8 +68,8 @@ function setSessionCookies(res, sessionToken, csrfToken) {
   res.cookie(CSRF_COOKIE, csrfToken, { ...base, httpOnly: false });
 }
 
-function clearSessionCookies(res) {
-  const secure = process.env.NODE_ENV === 'production';
+function clearSessionCookies(req, res) {
+  const secure = cookieSecureFlag(req);
   const sameSite = secure ? 'none' : 'lax';
   res.clearCookie(SESSION_COOKIE, { path: '/', secure, sameSite });
   res.clearCookie(CSRF_COOKIE, { path: '/', secure, sameSite });
@@ -59,9 +80,153 @@ function generateSessionToken() {
 }
 
 function deviceHashFromRequest(req) {
-  const ua = req.headers['user-agent'] || 'unknown';
-  const ip = getClientIp(req) || 'unknown';
-  return crypto.createHash('sha256').update(`${ua}|${ip}`).digest('hex');
+  const raw = deviceTrust.readDeviceToken(req);
+  if (raw) return deviceTrust.deviceHashFromToken(raw);
+  return null;
+}
+
+function publicAppBase() {
+  return (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+}
+
+function hashToken(raw) {
+  return crypto.createHash('sha256').update(String(raw), 'utf8').digest('hex');
+}
+
+async function issueFullSession(req, res, user, auditAction = 'LOGIN') {
+  const token = signAccessToken(user);
+  const sessionToken = generateSessionToken();
+  const csrfToken = generateSessionToken();
+  await authSessionsDb.create(pool, {
+    userId: user.id,
+    sessionToken,
+    csrfToken,
+    expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+  });
+  setSessionCookies(req, res, sessionToken, csrfToken);
+  const client = await pool.connect();
+  try {
+    await auditLog(client, {
+      actorId: user.id,
+      actionType: auditAction,
+      targetEntity: user.email,
+      payloadBefore: null,
+      payloadAfter: null,
+      ipAddress: getClientIp(req),
+    });
+  } finally {
+    client.release();
+  }
+  return {
+    token,
+    user: { id: user.id, email: user.email, role: user.role, business_unit_id: user.business_unit_id },
+  };
+}
+
+async function trustDeviceFromRequest(req, res, user) {
+  let rawDevice = deviceTrust.readDeviceToken(req);
+  if (!rawDevice) {
+    rawDevice = deviceTrust.generateDeviceToken();
+    deviceTrust.setDeviceCookie(req, res, rawDevice);
+  }
+  const deviceHash = deviceTrust.deviceHashFromToken(rawDevice);
+  await mfaDb.upsertTrustedDevice(pool, {
+    userId: user.id,
+    deviceHash,
+    ipAddress: getClientIp(req),
+    expiresAt: deviceTrust.deviceExpiresAt(),
+    lastVerifiedAt: new Date(),
+  });
+  await mfaDb.updateLastMfaVerifiedAt(pool, user.id);
+  return deviceHash;
+}
+
+async function sendLoginMagicLink(req, user) {
+  await magicLinkDb.invalidatePendingForUser(pool, user.id);
+  const rawToken = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = hashToken(rawToken);
+  const pendingId = crypto.randomUUID();
+  const pendingLoginHash = hashToken(pendingId);
+  const expiresAt = new Date(Date.now() + LOGIN_MAGIC_LINK_TTL_MS);
+  await magicLinkDb.insert(pool, {
+    userId: user.id,
+    tokenHash,
+    expiresAt,
+    requestIp: getClientIp(req),
+    pendingLoginHash,
+  });
+  const loginUrl = `${publicAppBase()}/magic-link-login?token=${encodeURIComponent(rawToken)}`;
+  try {
+    await mailer.sendLoginMagicLinkEmail({
+      to: user.email,
+      loginUrl,
+      ttlMinutes: LOGIN_MAGIC_LINK_TTL_MINUTES,
+    });
+  } catch (mailErr) {
+    console.error('Login magic link email error:', mailErr.message);
+  }
+  const client = await pool.connect();
+  try {
+    await auditLog(client, {
+      actorId: user.id,
+      actionType: 'LOGIN_MFA_MAGIC_LINK_SENT',
+      targetEntity: user.email,
+      payloadBefore: null,
+      payloadAfter: { expires_in: LOGIN_MAGIC_LINK_TTL_MS / 1000 },
+      ipAddress: getClientIp(req),
+    });
+  } finally {
+    client.release();
+  }
+  return { pendingId, expiresIn: Math.floor(LOGIN_MAGIC_LINK_TTL_MS / 1000) };
+}
+
+async function tryLegacyOtpMfa(req, res, user, policy) {
+  if (!(MFA_ENABLED && user.mfa_enabled && user.mfa_method === 'email_otp')) return false;
+  const deviceHash = deviceHashFromRequest(req);
+  const trusted = deviceHash
+    ? await mfaDb.getTrustedDevice(pool, { userId: user.id, deviceHash })
+    : null;
+  const risk = evaluateRisk({ knownDevice: !!trusted, req });
+  const needsPeriodicMfa = !user.last_mfa_verified_at || (
+    Date.now() - new Date(user.last_mfa_verified_at).getTime() >
+    (policy.mfa_reverify_days || 14) * 24 * 60 * 60 * 1000
+  );
+  const needsRiskMfa = risk.score >= (policy.mfa_risk_threshold || 50);
+  if (!(needsPeriodicMfa || needsRiskMfa)) return false;
+
+  const challengeId = crypto.randomUUID();
+  const otp = generateOtpCode();
+  await mfaDb.createChallenge(pool, {
+    userId: user.id,
+    reason: needsRiskMfa ? 'risk' : 'periodic',
+    challengeId,
+    otpHash: hashOtp(otp),
+    expiresAt: new Date(Date.now() + MFA_CHALLENGE_TTL_SECONDS * 1000),
+    maxAttempts: MFA_MAX_ATTEMPTS,
+  });
+  await mfaDb.insertRiskEvent(pool, {
+    userId: user.id,
+    email: user.email,
+    ipAddress: getClientIp(req),
+    userAgent: req.headers['user-agent'] || '',
+    deviceHash: deviceHash || 'unknown',
+    riskScore: risk.score,
+    reasons: risk.reasons,
+    decision: needsRiskMfa ? 'MFA_REQUIRED_RISK' : 'MFA_REQUIRED_PERIODIC',
+  });
+  try {
+    await mailer.sendOtpEmail({ to: user.email, otp, ttlSeconds: MFA_CHALLENGE_TTL_SECONDS });
+  } catch (mailErr) {
+    console.error('MFA OTP email error:', mailErr.message);
+  }
+  res.status(202).json({
+    mfa_required: true,
+    challenge_id: challengeId,
+    expires_in: MFA_CHALLENGE_TTL_SECONDS,
+    reason: needsRiskMfa ? 'risk' : 'periodic',
+  });
+  return true;
 }
 
 function generateOtpCode() {
@@ -128,6 +293,28 @@ const forgotPasswordLimit = rateLimit({
   },
 });
 
+const magicLinkResendLimit = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_MAGIC_LINK_RESEND_WINDOW_MS || '900000', 10),
+  max: isTest ? 10000 : Math.max(1, parseInt(process.env.RATE_LIMIT_MAGIC_LINK_RESEND_MAX || '3', 10)),
+  message: { error: 'Too many resend attempts. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const rawIp = req.ip || req.socket?.remoteAddress || 'unknown';
+    const ip = ipKeyGenerator(rawIp);
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    return `magic-resend:${ip}:${email || 'no-email'}`;
+  },
+});
+
+const magicLinkVerifyLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: isTest ? 10000 : Math.max(1, parseInt(process.env.RATE_LIMIT_MAGIC_LINK_VERIFY_MAX || '10', 10)),
+  message: { error: 'Too many verification attempts. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // GET /api/auth/registration-options — public; returns BUs for registration dropdown
 router.get('/registration-options', async (req, res) => {
   try {
@@ -187,7 +374,7 @@ router.post('/register', registerLimit, async (req, res) => {
       csrfToken,
       expiresAt: new Date(Date.now() + SESSION_TTL_MS),
     });
-    setSessionCookies(res, sessionToken, csrfToken);
+    setSessionCookies(req, res, sessionToken, csrfToken);
     res.status(201).json({ user: { id: user.id, email: user.email, role: user.role, business_unit_id: user.business_unit_id }, token });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
@@ -224,71 +411,36 @@ router.post('/login', loginLimit, async (req, res) => {
         return res.status(403).json({ error: 'Password expired', code: 'PASSWORD_EXPIRED' });
       }
     }
-    const trusted = await mfaDb.getTrustedDevice(pool, { userId: user.id, deviceHash: deviceHashFromRequest(req) });
-    const risk = evaluateRisk({ knownDevice: !!trusted, req });
-    const needsPeriodicMfa = !user.last_mfa_verified_at || (
-      Date.now() - new Date(user.last_mfa_verified_at).getTime() >
-      (policy.mfa_reverify_days || 14) * 24 * 60 * 60 * 1000
-    );
-    const needsRiskMfa = risk.score >= (policy.mfa_risk_threshold || 50);
-    if (MFA_ENABLED && user.mfa_enabled && (needsPeriodicMfa || needsRiskMfa)) {
-      const challengeId = crypto.randomUUID();
-      const otp = generateOtpCode();
-      await mfaDb.createChallenge(pool, {
-        userId: user.id,
-        reason: needsRiskMfa ? 'risk' : 'periodic',
-        challengeId,
-        otpHash: hashOtp(otp),
-        expiresAt: new Date(Date.now() + MFA_CHALLENGE_TTL_SECONDS * 1000),
-        maxAttempts: MFA_MAX_ATTEMPTS,
-      });
-      await mfaDb.insertRiskEvent(pool, {
-        userId: user.id,
-        email: user.email,
-        ipAddress: getClientIp(req),
-        userAgent: req.headers['user-agent'] || '',
-        deviceHash: deviceHashFromRequest(req),
-        riskScore: risk.score,
-        reasons: risk.reasons,
-        decision: needsRiskMfa ? 'MFA_REQUIRED_RISK' : 'MFA_REQUIRED_PERIODIC',
-      });
-      try {
-        await mailer.sendOtpEmail({ to: user.email, otp, ttlSeconds: MFA_CHALLENGE_TTL_SECONDS });
-      } catch (mailErr) {
-        console.error('MFA OTP email error:', mailErr.message);
+
+    if (await tryLegacyOtpMfa(req, res, user, policy)) return;
+
+    if (isLoginMfaEnabled()) {
+      const deviceHash = deviceHashFromRequest(req);
+      const trusted = deviceHash
+        ? await mfaDb.getTrustedDevice(pool, { userId: user.id, deviceHash })
+        : null;
+      if (trusted && deviceTrust.canBypassMfa(trusted, policy)) {
+        await mfaDb.touchTrustedDevice(pool, {
+          userId: user.id,
+          deviceHash,
+          ipAddress: getClientIp(req),
+        });
+        await mfaDb.updateLastMfaVerifiedAt(pool, user.id);
+        const session = await issueFullSession(req, res, user, 'LOGIN_MFA_BYPASS');
+        return res.json(session);
       }
+
+      const { pendingId, expiresIn } = await sendLoginMagicLink(req, user);
       return res.status(202).json({
-        mfa_required: true,
-        challenge_id: challengeId,
-        expires_in: MFA_CHALLENGE_TTL_SECONDS,
-        reason: needsRiskMfa ? 'risk' : 'periodic',
+        magic_link_required: true,
+        pending_id: pendingId,
+        expires_in: expiresIn,
+        message: 'Check your email for a sign-in link.',
       });
     }
 
-    const token = signAccessToken(user);
-    const sessionToken = generateSessionToken();
-    const csrfToken = generateSessionToken();
-    await authSessionsDb.create(pool, {
-      userId: user.id,
-      sessionToken,
-      csrfToken,
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
-    });
-    setSessionCookies(res, sessionToken, csrfToken);
-    const client = await pool.connect();
-    try {
-      await auditLog(client, {
-        actorId: user.id,
-        actionType: 'LOGIN',
-        targetEntity: user.email,
-        payloadBefore: null,
-        payloadAfter: null,
-        ipAddress: getClientIp(req),
-      });
-    } finally {
-      client.release();
-    }
-    res.json({ user: { id: user.id, email: user.email, role: user.role, business_unit_id: user.business_unit_id }, token });
+    const session = await issueFullSession(req, res, user, 'LOGIN');
+    return res.json(session);
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Login failed' });
@@ -370,26 +522,104 @@ router.post('/mfa/verify', async (req, res) => {
 
     const user = await usersDb.getById(pool, challenge.user_id);
     if (!user) return res.status(400).json({ error: 'User not found' });
-    const token = signAccessToken(user);
-    const sessionToken = generateSessionToken();
-    const csrfToken = generateSessionToken();
-    await authSessionsDb.create(pool, {
-      userId: user.id,
-      sessionToken,
-      csrfToken,
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
-    });
-    await mfaDb.upsertTrustedDevice(pool, {
-      userId: user.id,
-      deviceHash: deviceHashFromRequest(req),
-      ipAddress: getClientIp(req),
-      expiresAt: new Date(Date.now() + ((await passwordPolicyDb.get(pool)).mfa_reverify_days || 14) * 24 * 60 * 60 * 1000),
-    });
-    setSessionCookies(res, sessionToken, csrfToken);
-    return res.json({ user: { id: user.id, email: user.email, role: user.role, business_unit_id: user.business_unit_id }, token });
+    await trustDeviceFromRequest(req, res, user);
+    const session = await issueFullSession(req, res, user, 'LOGIN');
+    return res.json(session);
   } catch (err) {
     console.error('MFA verify error:', err);
     return res.status(500).json({ error: 'Failed to verify code' });
+  }
+});
+
+// GET /api/auth/magic-link/token-info?token= — public; does not reveal user identity
+router.get('/magic-link/token-info', async (req, res) => {
+  try {
+    const raw = req.query.token;
+    if (!raw || typeof raw !== 'string') return res.json({ valid: false });
+    const row = await magicLinkDb.findActiveByHash(pool, hashToken(raw));
+    if (!row) return res.json({ valid: false });
+    return res.json({ valid: true, expires_in: Math.max(0, Math.floor((new Date(row.expires_at).getTime() - Date.now()) / 1000)) });
+  } catch (err) {
+    console.error('Magic link token info error:', err);
+    return res.json({ valid: false });
+  }
+});
+
+// POST /api/auth/magic-link/verify — consume login magic link and issue session
+router.post('/magic-link/verify', magicLinkVerifyLimit, async (req, res) => {
+  try {
+    const rawToken = String(req.body?.token || '').trim();
+    if (!rawToken) return res.status(400).json({ error: 'token required' });
+
+    const tokenHash = hashToken(rawToken);
+    const row = await magicLinkDb.findActiveByHash(pool, tokenHash);
+    if (!row) return res.status(400).json({ error: 'Invalid or expired link' });
+
+    const user = await usersDb.getById(pool, row.user_id);
+    if (!user) return res.status(400).json({ error: 'Invalid or expired link' });
+    if (user.locked_until && new Date(user.locked_until) > new Date()) {
+      return res.status(423).json({ error: 'Account locked', code: 'ACCOUNT_LOCKED', locked_until: user.locked_until });
+    }
+    const policy = await passwordPolicyDb.get(pool);
+    if (policy.password_expiry_days > 0) {
+      const changedAt = user.password_changed_at ? new Date(user.password_changed_at).getTime() : 0;
+      const expiryMs = policy.password_expiry_days * 24 * 60 * 60 * 1000;
+      if (!changedAt || Date.now() - changedAt > expiryMs) {
+        return res.status(403).json({ error: 'Password expired', code: 'PASSWORD_EXPIRED' });
+      }
+    }
+
+    await magicLinkDb.markUsed(pool, row.id);
+    await magicLinkDb.invalidatePendingForUser(pool, user.id);
+    await trustDeviceFromRequest(req, res, user);
+
+    const session = await issueFullSession(req, res, user, 'LOGIN_MFA_MAGIC_LINK_VERIFIED');
+    return res.json(session);
+  } catch (err) {
+    console.error('Magic link verify error:', err);
+    return res.status(500).json({ error: 'Failed to complete sign-in' });
+  }
+});
+
+// POST /api/auth/magic-link/resend — re-validates password and sends a fresh link
+router.post('/magic-link/resend', magicLinkResendLimit, loginLimit, async (req, res) => {
+  try {
+    const { email, password, pending_id: pendingId } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password required' });
+    }
+    const emailNorm = String(email).trim().toLowerCase();
+    const user = await usersDb.getByEmail(pool, emailNorm);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    const policy = await passwordPolicyDb.get(pool);
+    if (user.locked_until && new Date(user.locked_until) > new Date()) {
+      return res.status(423).json({ error: 'Account locked', code: 'ACCOUNT_LOCKED', locked_until: user.locked_until });
+    }
+    if (!(await bcrypt.compare(password, user.password_hash))) {
+      await usersDb.incrementFailedLogin(pool, user.id, policy.max_login_attempts, policy.lockout_duration_mins);
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    if (pendingId) {
+      const pendingHash = hashToken(String(pendingId).trim());
+      const pending = await magicLinkDb.findActiveByPendingLoginHash(pool, pendingHash);
+      if (!pending || pending.user_id !== user.id) {
+        return res.status(400).json({ error: 'Invalid or expired pending login' });
+      }
+    }
+
+    const { pendingId: newPendingId, expiresIn } = await sendLoginMagicLink(req, user);
+    return res.status(202).json({
+      magic_link_required: true,
+      pending_id: newPendingId,
+      expires_in: expiresIn,
+      message: 'A new sign-in link has been sent to your email.',
+    });
+  } catch (err) {
+    console.error('Magic link resend error:', err);
+    return res.status(500).json({ error: 'Failed to resend sign-in link' });
   }
 });
 
@@ -407,7 +637,7 @@ router.post('/logout', async (req, res) => {
   } catch (err) {
     console.error('Logout revoke warning:', err.message);
   }
-  clearSessionCookies(res);
+  clearSessionCookies(req, res);
   res.json({ message: 'Signed out' });
 });
 
@@ -466,7 +696,7 @@ router.post('/change-password-expired', async (req, res) => {
       csrfToken,
       expiresAt: new Date(Date.now() + SESSION_TTL_MS),
     });
-    setSessionCookies(res, sessionToken, csrfToken);
+    setSessionCookies(req, res, sessionToken, csrfToken);
     const client = await pool.connect();
     try {
       await auditLog(client, {

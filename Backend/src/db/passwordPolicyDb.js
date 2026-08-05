@@ -14,13 +14,17 @@ const DEFAULTS = {
   lockout_duration_mins: 30,
   mfa_reverify_days: 14,
   mfa_risk_threshold: 50,
+  login_mfa_bypass_mode: 'rolling_24h',
+  login_mfa_bypass_hours: 24,
+  login_mfa_bypass_timezone: 'UTC',
 };
 
 async function get(db) {
   const { rows } = await db.query(
     `SELECT password_expiry_days, min_password_length, require_uppercase, require_lowercase,
             require_number, require_symbol, password_history_count, max_login_attempts, lockout_duration_mins,
-            mfa_reverify_days, mfa_risk_threshold
+            mfa_reverify_days, mfa_risk_threshold,
+            login_mfa_bypass_mode, login_mfa_bypass_hours, login_mfa_bypass_timezone
      FROM password_policy WHERE id = 1`
   );
   const row = rows[0];
@@ -37,6 +41,9 @@ async function get(db) {
     lockout_duration_mins: row.lockout_duration_mins ?? DEFAULTS.lockout_duration_mins,
     mfa_reverify_days: row.mfa_reverify_days ?? DEFAULTS.mfa_reverify_days,
     mfa_risk_threshold: row.mfa_risk_threshold ?? DEFAULTS.mfa_risk_threshold,
+    login_mfa_bypass_mode: row.login_mfa_bypass_mode ?? DEFAULTS.login_mfa_bypass_mode,
+    login_mfa_bypass_hours: row.login_mfa_bypass_hours ?? DEFAULTS.login_mfa_bypass_hours,
+    login_mfa_bypass_timezone: row.login_mfa_bypass_timezone ?? DEFAULTS.login_mfa_bypass_timezone,
   };
 }
 
@@ -95,6 +102,22 @@ async function update(db, payload) {
     const v = Math.max(0, Math.min(100, parseInt(String(payload.mfa_risk_threshold), 10) || 50));
     updates.push(`mfa_risk_threshold = $${idx++}`);
     values.push(v);
+  }
+  if (payload.login_mfa_bypass_mode !== undefined) {
+    const mode = String(payload.login_mfa_bypass_mode).trim();
+    const allowed = mode === 'calendar_day' ? 'calendar_day' : 'rolling_24h';
+    updates.push(`login_mfa_bypass_mode = $${idx++}`);
+    values.push(allowed);
+  }
+  if (payload.login_mfa_bypass_hours !== undefined) {
+    const v = Math.max(1, Math.min(168, parseInt(String(payload.login_mfa_bypass_hours), 10) || 24));
+    updates.push(`login_mfa_bypass_hours = $${idx++}`);
+    values.push(v);
+  }
+  if (payload.login_mfa_bypass_timezone !== undefined) {
+    const tz = String(payload.login_mfa_bypass_timezone).trim().slice(0, 64) || 'UTC';
+    updates.push(`login_mfa_bypass_timezone = $${idx++}`);
+    values.push(tz);
   }
 
   if (updates.length === 0) return get(db);

@@ -4,14 +4,27 @@ function sha256(value) {
   return crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
 }
 
-async function upsertTrustedDevice(db, { userId, deviceHash, ipAddress, expiresAt }) {
+async function upsertTrustedDevice(db, { userId, deviceHash, ipAddress, expiresAt, lastVerifiedAt }) {
+  const verifiedAt = lastVerifiedAt || new Date();
   const { rows } = await db.query(
-    `INSERT INTO trusted_devices (user_id, device_hash, first_ip, last_ip, expires_at)
-     VALUES ($1, $2, $3, $3, $4)
+    `INSERT INTO trusted_devices (user_id, device_hash, first_ip, last_ip, expires_at, last_verified_at)
+     VALUES ($1, $2, $3, $3, $4, $5)
      ON CONFLICT (user_id, device_hash) WHERE revoked_at IS NULL
-     DO UPDATE SET last_ip = EXCLUDED.last_ip, last_seen_at = now(), expires_at = EXCLUDED.expires_at
+     DO UPDATE SET last_ip = EXCLUDED.last_ip, last_seen_at = now(), expires_at = EXCLUDED.expires_at,
+                   last_verified_at = EXCLUDED.last_verified_at
      RETURNING *`,
-    [userId, deviceHash, ipAddress || null, expiresAt]
+    [userId, deviceHash, ipAddress || null, expiresAt, verifiedAt]
+  );
+  return rows[0] || null;
+}
+
+async function touchTrustedDevice(db, { userId, deviceHash, ipAddress }) {
+  const { rows } = await db.query(
+    `UPDATE trusted_devices
+     SET last_verified_at = now(), last_seen_at = now(), last_ip = COALESCE($3, last_ip)
+     WHERE user_id = $1 AND device_hash = $2 AND revoked_at IS NULL AND expires_at > now()
+     RETURNING *`,
+    [userId, deviceHash, ipAddress || null]
   );
   return rows[0] || null;
 }
@@ -75,6 +88,7 @@ async function updateLastMfaVerifiedAt(db, userId) {
 module.exports = {
   getTrustedDevice,
   upsertTrustedDevice,
+  touchTrustedDevice,
   insertRiskEvent,
   createChallenge,
   getActiveChallenge,

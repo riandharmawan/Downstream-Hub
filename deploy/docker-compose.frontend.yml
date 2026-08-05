@@ -8,7 +8,8 @@ services:
       context: ../Frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: http://172.28.92.56:3010
+        # Empty = same-origin (/api, /uploads via Nginx proxy). Works for IP or domain entrypoints.
+        VITE_API_URL: ""
     container_name: downstream-hub-web
     restart: unless-stopped
     ports:
