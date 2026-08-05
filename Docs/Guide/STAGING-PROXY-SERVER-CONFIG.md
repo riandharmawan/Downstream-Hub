@@ -7,6 +7,7 @@ This guide configures staging so browsers call only `172.28.92.56:3010` and Ngin
 - Public UI + API entrypoint: `http://172.28.92.56:3010`
 - Frontend container host binding on `.56`: `3100 -> 3000`
 - Backend API on `.57`: `4000`
+- PostgreSQL on `.60`: `5432` (not proxied through Nginx — backend connects directly)
 
 ## 1) App server `.56` — apply proxy config
 
@@ -111,7 +112,12 @@ Verify in browser DevTools → Network:
 - API calls: `http://test-dwshub.kpndomain.com/api/...` (not `172.28.92.56:3010`)
 - Icon URLs: `http://test-dwshub.kpndomain.com/uploads/app-icons/...`
 
-## 6) Troubleshooting
+## 6) pgAdmin and DB host
+
+- **pgAdmin:** Connect to **172.28.92.60:5432** (not `.57`). Credentials are in `/opt/downstream-hub/.env` on the DB host.
+- Security group on `.60` must allow your admin IP on port 5432 if connecting from outside the VPC.
+
+## 7) Troubleshooting
 
 - Timeout from PC to `.57:4000` is expected after lock-down if client is not in allow-list.
 - If browser still calls `.57:4000`, frontend was built with old `VITE_API_URL`; rebuild frontend with empty `VITE_API_URL` (same-origin) or matching domain.

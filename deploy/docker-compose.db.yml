@@ -1,0 +1,27 @@
+# Downstream Hub — PostgreSQL only (run on 172.28.92.60)
+# Usage: from repo root: cp deploy/env.db.example .env && edit .env
+#        docker compose -f deploy/docker-compose.db.yml up -d
+# Postgres: host port 5432 → container 5432
+# Allow inbound 5432 only from backend host 172.28.92.57 (and admin IPs for pgAdmin).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: downstream-hub-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hubsecret}
+      POSTGRES_DB: ${POSTGRES_DB:-downstream_hub}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hub} -d ${POSTGRES_DB:-downstream_hub}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

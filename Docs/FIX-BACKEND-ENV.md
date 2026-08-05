@@ -39,7 +39,7 @@ TRUST_PROXY=1
 EOF
 ```
 
-(Don’t add `DATABASE_URL` here if you use Docker Compose — it overrides it. Add other vars like JWT_SECRET from your current file before overwriting.)
+(Don’t omit `DATABASE_URL` — set it to `postgresql://hub:password@172.28.92.60:5432/downstream_hub`. Add other vars like JWT_SECRET from your current file before overwriting.)
 
 After fixing, recreate the backend container:
 

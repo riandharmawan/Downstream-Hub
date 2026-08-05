@@ -1,6 +1,8 @@
-# Downstream Hub — Deployment Guide (Alibaba Cloud, Docker, two servers)
+# Downstream Hub — Deployment Guide (Alibaba Cloud, Docker, three servers)
 
-This guide deploys the application **using Docker** on two Alicloud servers: **Frontend** on one host and **Backend + PostgreSQL** on the other. Install path: **/opt**.
+This guide deploys the application **using Docker** on three Alicloud servers: **Frontend** on one host, **Backend API** on another, and **PostgreSQL** on a dedicated DB host. Install path: **/opt**.
+
+For staging pull/deploy runbooks, see **[Guide/STAGING-DEPLOY-TWO-SERVERS.md](Guide/STAGING-DEPLOY-TWO-SERVERS.md)** (three-server layout). For one-time DB migration from legacy co-located Postgres, see **[Guide/STAGING-DB-MIGRATION.md](Guide/STAGING-DB-MIGRATION.md)**.
 
 For a non-Docker (host Node/Nginx/PostgreSQL) deployment, see **[DEPLOYMENT-ALICLOUD.md](DEPLOYMENT-ALICLOUD.md)**.
 
@@ -12,9 +14,9 @@ Same as the non-Docker guide:
 
 | Service           | Server        | Port  | Notes                                      |
 |-------------------|---------------|-------|--------------------------------------------|
-| **Frontend (HTTP)** | 172.28.92.56 | **3010** | Container exposes 3000; host maps 3010→3000 |
+| **Frontend (HTTP)** | 172.28.92.56 | **3010** | Container exposes 3000; host maps 3100→3000; Nginx on 3010 |
 | **Backend API**   | 172.28.92.57 | **4000** | Node.js API in container                   |
-| **PostgreSQL**    | 172.28.92.57 | **5432** | Postgres container (or use host Postgres)  |
+| **PostgreSQL**    | 172.28.92.60 | **5432** | Postgres container on dedicated DB host    |
 
 - **Frontend**: Users open `http://172.28.92.56:3010`.
 - **Backend**: Frontend calls `http://172.28.92.57:4000` (set at **build time** via `VITE_API_URL`).
@@ -29,13 +31,14 @@ Clone the full repo on **both** servers (or at least the parts needed to build t
 /opt/downstream-hub/
 ├── Backend/           # Backend Dockerfile and source
 ├── Frontend/          # Frontend Dockerfile and source
-├── deploy/            # docker-compose.frontend.yml, docker-compose.backend.yml, env examples
+├── deploy/            # docker-compose.*.yml, env examples
 ├── Docs/
 └── ...
 ```
 
 - **172.28.92.56**: Run frontend stack only (build + run frontend container).
-- **172.28.92.57**: Run backend stack (PostgreSQL + Backend API containers).
+- **172.28.92.57**: Run backend API container only (`deploy/docker-compose.backend.yml`).
+- **172.28.92.60**: Run PostgreSQL container only (`deploy/docker-compose.db.yml`).
 
 ---
 
@@ -124,11 +127,11 @@ Run these checks on **172.28.92.56** (or from your laptop if you can reach that 
 | **4. Page content** | `curl -s http://127.0.0.1:3010 \| head -20` | HTML with `<html>`, `<script>`, or React root (e.g. `id="root"`). |
 | **5. Browser** | Open `http://172.28.92.56:3010` in a browser (from a machine that can reach the server). | Login/Register page loads. API calls will fail until the backend is up (Step 5); that is expected. |
 
-If all of the above pass, the frontend is deployed correctly. You can proceed to **Step 5** (Backend + PostgreSQL on 172.28.92.57).
+If all of the above pass, the frontend is deployed correctly. Proceed to **Step 5** (PostgreSQL on 172.28.92.60) and **Step 6** (Backend on 172.28.92.57).
 
 ---
 
-## 5. Server 172.28.92.57 — Backend + PostgreSQL (Docker)
+## 5. Server 172.28.92.60 — PostgreSQL (Docker)
 
 ### 5.1 Clone repository
 
@@ -139,9 +142,57 @@ cd /opt/downstream-hub
 git clone --branch sit https://github.com/riandharmawan/Downstream-Hub.git .
 ```
 
-### 5.2 Backend environment file
+### 5.2 PostgreSQL env (repo root `.env`)
 
-Create the file that the **backend container** will read (secrets and API URL). The **database** URL is set by the compose file, so you do not put it in this file.
+```bash
+cp deploy/env.db.example .env
+nano .env
+```
+
+Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`. Use a strong password — the same value goes into `DATABASE_URL` on the backend host.
+
+### 5.3 Build and run
+
+```bash
+cd /opt/downstream-hub
+docker compose -f deploy/docker-compose.db.yml up -d
+```
+
+### 5.4 Firewall
+
+Allow inbound TCP **5432** only from backend host **172.28.92.57** (and optional admin IP for pgAdmin):
+
+```bash
+sudo bash deploy/setup-db-firewall.sh
+# Or with pgAdmin from your PC:
+# ADMIN_IP=203.0.113.10 bash deploy/setup-db-firewall.sh
+```
+
+Mirror the same rules in the Alibaba Cloud security group for `.60`.
+
+### 5.5 Verify database
+
+```bash
+docker ps | grep downstream-hub-db
+docker exec -it downstream-hub-db psql -U hub -d downstream_hub -c "SELECT 1"
+```
+
+---
+
+## 6. Server 172.28.92.57 — Backend API (Docker)
+
+### 6.1 Clone repository
+
+```bash
+sudo mkdir -p /opt/downstream-hub
+sudo chown "$USER:$USER" /opt/downstream-hub
+cd /opt/downstream-hub
+git clone --branch sit https://github.com/riandharmawan/Downstream-Hub.git .
+```
+
+### 6.2 Backend environment file
+
+Create the file that the **backend container** will read (secrets, API URL, and database connection).
 
 **1. Copy the example and open it:**
 
@@ -151,34 +202,19 @@ cp deploy/env.backend.example Backend/.env
 nano Backend/.env
 ```
 
-**2. Edit these four values** (replace the placeholders with your own):
+**2. Edit these values** (replace placeholders):
 
 | Variable | What to put | Example |
 |---------|-------------|---------|
-| **JWT_SECRET** | A long random string (used to sign login tokens). Generate one, e.g. `openssl rand -base64 32` | `a1b2c3d4e5...` (many characters) |
-| **SSO_TOKEN_SECRET** | Another long random string (used for SSO token encryption). | Same idea as above |
-| **API_PUBLIC_URL** | The URL where the API is reachable (for SSO redirects). | `http://172.28.92.57:4000` |
-| **TRUST_PROXY** | Leave as `1` when behind a proxy or load balancer. | `1` |
+| **DATABASE_URL** | Connection to Postgres on `.60` | `postgresql://hub:your_password@172.28.92.60:5432/downstream_hub` |
+| **JWT_SECRET** | Long random string (`openssl rand -base64 32`) | `a1b2c3d4e5...` |
+| **SSO_TOKEN_SECRET** | Another long random string | Same idea as above |
+| **API_PUBLIC_URL** | Public URL browsers use (proxy or domain) | `http://172.28.92.56:3010` |
+| **TRUST_PROXY** | Leave as `1` when behind Nginx | `1` |
 
-**3. Remove or comment out `DATABASE_URL`** in `Backend/.env` for this Docker setup. The compose file injects `DATABASE_URL` automatically so the backend connects to the Postgres container. If `DATABASE_URL` is present in `Backend/.env`, the compose file’s value still overrides it; removing it avoids confusion.
+Save and exit.
 
-Save and exit (`Ctrl+O`, Enter, `Ctrl+X` in nano).
-
-### 5.3 PostgreSQL env (for compose)
-
-The Postgres container reads `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` from the **host** environment or from a `.env` file in the **repo root** when you run `docker compose`.
-
-Create `/opt/downstream-hub/.env` (repo root) with:
-
-```env
-POSTGRES_USER=hub
-POSTGRES_PASSWORD=your_secure_password
-POSTGRES_DB=downstream_hub
-```
-
-Use a strong password. The backend container will connect to Postgres using these same values (compose sets `DATABASE_URL` from them).
-
-### 5.4 Build and run
+### 6.3 Build and run
 
 ```bash
 cd /opt/downstream-hub
@@ -187,56 +223,34 @@ docker compose -f deploy/docker-compose.backend.yml up -d --build
 
 Migrations run automatically when the backend container starts (see `Backend/src/server.js`).
 
-### 5.5 Firewall
+### 6.4 Firewall
 
 ```bash
-sudo firewall-cmd --permanent --add-port=4000/tcp
-# Optional: if you need external access to Postgres
-# sudo firewall-cmd --permanent --add-port=5432/tcp
+sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=172.28.92.56/32 port protocol=tcp port=4000 accept'
 sudo firewall-cmd --reload
 ```
 
-### 5.5a Verify database (optional)
+Do **not** expose Postgres on `.57` — DB is on `.60`.
 
-To confirm the Postgres container and app database are set up correctly, on **172.28.92.57** run:
+### 6.5 Verify backend
 
 ```bash
-# 1. Postgres container is running
-docker ps | grep downstream-hub-db
-
-# 2. Connect into the Postgres container and check DB + tables
-docker exec -it downstream-hub-db psql -U hub -d downstream_hub -c "\dt"
+curl http://127.0.0.1:4000/health
+docker compose -f deploy/docker-compose.backend.yml logs backend --tail 50
 ```
 
-You should see tables such as `users`, `allowed_domains`, `business_units`, `applications`, `audit_logs`, `password_policy`, etc. If migrations ran on backend startup, these exist. To check allowed domains:
+### 6.6 Useful commands
 
 ```bash
-docker exec -it downstream-hub-db psql -U hub -d downstream_hub -c "SELECT domain FROM allowed_domains WHERE deleted_at IS NULL;"
-```
-
-You should see at least `example.com` (seeded by migration).
-
-### 5.6 Useful commands
-
-```bash
-# Logs (both services)
-docker compose -f deploy/docker-compose.backend.yml logs -f
-
-# Backend only
 docker compose -f deploy/docker-compose.backend.yml logs -f backend
-
-# Stop
 docker compose -f deploy/docker-compose.backend.yml down
-
-# Stop and remove Postgres data volume (destructive)
-docker compose -f deploy/docker-compose.backend.yml down -v
 ```
 
 API is available at **http://172.28.92.57:4000** (e.g. `GET /health`).
 
 ---
 
-## 6. Using host PostgreSQL instead of container
+## 7. Using host PostgreSQL instead of container
 
 If PostgreSQL is already running on 172.28.92.57 (e.g. on port 5432), you can run **only the backend container** and point it at the host DB.
 
@@ -263,7 +277,7 @@ Then run migrations once (e.g. temporarily run the same image with `npm run migr
 
 ---
 
-## 7. Verification
+## 8. Verification
 
 | Check | How |
 |-------|-----|
@@ -273,19 +287,19 @@ Then run migrations once (e.g. temporarily run the same image with `npm run migr
 
 ---
 
-## 8. Summary: quick reference
+## 9. Summary: quick reference
 
-| Item | Frontend (172.28.92.56) | Backend (172.28.92.57) |
-|------|--------------------------|-------------------------|
-| **Port** | 3010 (host) → 3000 (container) | 4000 (API), 5432 (Postgres container) |
-| **Compose file** | `deploy/docker-compose.frontend.yml` | `deploy/docker-compose.backend.yml` |
-| **Env** | Build arg `VITE_API_URL` in compose | `Backend/.env` + repo root `.env` (POSTGRES_*) |
-| **Start** | `docker compose -f deploy/docker-compose.frontend.yml up -d --build` | `docker compose -f deploy/docker-compose.backend.yml up -d --build` |
-| **Migrations** | — | Run on backend container startup |
+| Item | Frontend (172.28.92.56) | Backend (172.28.92.57) | Database (172.28.92.60) |
+|------|--------------------------|-------------------------|-------------------------|
+| **Port** | 3010 (Nginx), 3100 (container) | 4000 (API) | 5432 (Postgres) |
+| **Compose file** | `deploy/docker-compose.frontend.yml` | `deploy/docker-compose.backend.yml` | `deploy/docker-compose.db.yml` |
+| **Env** | Build arg `VITE_API_URL` | `Backend/.env` (`DATABASE_URL` → `.60`) | Repo root `.env` (`POSTGRES_*`) |
+| **Start** | `docker compose -f deploy/docker-compose.frontend.yml up -d --build` | `docker compose -f deploy/docker-compose.backend.yml up -d --build` | `docker compose -f deploy/docker-compose.db.yml up -d` |
+| **Migrations** | — | Run on backend container startup | — |
 
 ---
 
-## 9. Optional: Alibaba Cloud KMS (secrets)
+## 10. Optional: Alibaba Cloud KMS (secrets)
 
 To load secrets from KMS, the backend image must include the KMS SDK. Add to `Backend/Dockerfile` (runner stage):
 
@@ -297,7 +311,7 @@ Then in `Backend/.env`: set `USE_SECRET_MANAGER=alicloud`, `ALICLOUD_SECRET_NAME
 
 ---
 
-## 10. Document history
+## 11. Document history
 
 | Date | Change |
 |------|--------|
