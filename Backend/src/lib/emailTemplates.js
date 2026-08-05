@@ -37,23 +37,30 @@ function normalizeLines(value) {
   return [String(value)];
 }
 
+/** Outlook VML roundrect width — fixed 220px clipped longer labels like "Complete sign-in". */
+function buttonWidthForLabel(label) {
+  const len = String(label).length;
+  return Math.max(240, Math.min(360, len * 14 + 48));
+}
+
 function renderBulletproofButton(label, url) {
   const safeLabel = escapeHtml(label);
   const safeUrl = escapeHtml(url);
+  const buttonWidth = buttonWidthForLabel(label);
   return `
 <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:24px auto;">
   <tr>
     <td align="center" bgcolor="${BRAND.primary}" style="border-radius:8px;background-color:${BRAND.primary};">
       <!--[if mso]>
       <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
-        href="${safeUrl}" style="height:48px;v-text-anchor:middle;width:220px;" arcsize="12%" stroke="f" fillcolor="${BRAND.primary}">
+        href="${safeUrl}" style="height:48px;v-text-anchor:middle;width:${buttonWidth}px;" arcsize="12%" stroke="f" fillcolor="${BRAND.primary}">
         <w:anchorlock/>
         <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">${safeLabel}</center>
       </v:roundrect>
       <![endif]-->
       <!--[if !mso]><!-->
       <a href="${safeUrl}" target="_blank" rel="noopener noreferrer"
-        style="display:inline-block;padding:14px 32px;font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:600;color:#FFFFFF;text-decoration:none;border-radius:8px;background-color:${BRAND.primary};mso-hide:all;">
+        style="display:inline-block;padding:14px 32px;font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:600;color:#FFFFFF;text-decoration:none;border-radius:8px;background-color:${BRAND.primary};white-space:nowrap;mso-hide:all;">
         ${safeLabel}
       </a>
       <!--<![endif]-->
@@ -194,5 +201,6 @@ module.exports = {
   escapeHtml,
   publicAppBase,
   publicAppLogoUrl,
+  buttonWidthForLabel,
   buildBrandedEmail,
 };

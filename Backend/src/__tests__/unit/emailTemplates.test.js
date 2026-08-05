@@ -3,6 +3,7 @@
  */
 const {
   buildBrandedEmail,
+  buttonWidthForLabel,
   escapeHtml,
   BRAND,
 } = require('../../lib/emailTemplates');
@@ -39,6 +40,8 @@ describe('emailTemplates', () => {
       expect(html).toContain('magic-link-login?token=abc');
       expect(html).toContain('/logo.png');
       expect(html).toContain('v:roundrect');
+      expect(html).toContain(`width:${buttonWidthForLabel('Complete sign-in')}px`);
+      expect(buttonWidthForLabel('Complete sign-in')).toBeGreaterThan(220);
       expect(text).toContain('Complete sign-in');
       expect(text).toContain('magic-link-login?token=abc');
     });
