@@ -90,17 +90,19 @@ export default function Dashboard() {
                 <span style={styles.cardBadge}>
                   <SsoBadge ssoMode={app.sso_mode} />
                 </span>
-                <div style={styles.cardIcon}>
-                  {iconSrc ? (
-                    <img src={iconSrc} alt="" style={styles.iconImg} />
-                  ) : (
-                    <span style={styles.iconInitials} title={app.name}>
-                      {applicationInitials(app.name)}
-                    </span>
-                  )}
+                <div style={styles.cardBody}>
+                  <div style={styles.cardIcon}>
+                    {iconSrc ? (
+                      <img src={iconSrc} alt="" style={styles.iconImg} />
+                    ) : (
+                      <span style={styles.iconInitials} title={app.name}>
+                        {applicationInitials(app.name)}
+                      </span>
+                    )}
+                  </div>
+                  <div style={styles.cardName}>{app.name}</div>
+                  <div style={styles.cardDesc}>{app.description || ''}</div>
                 </div>
-                <div style={styles.cardName}>{app.name}</div>
-                {app.description && <div style={styles.cardDesc}>{app.description}</div>}
                 {redirecting === app.id && <div style={styles.redirecting}>Opening…</div>}
               </button>
               );
@@ -124,10 +126,27 @@ const styles = {
   main: { maxWidth: 960, margin: '0 auto', padding: 'var(--space-4)' },
   error: { padding: 'var(--space-3)', background: '#FEE2E2', color: 'var(--color-destructive)', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-small)' },
   empty: { color: 'var(--color-text-steel)', fontSize: 'var(--text-small)' },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 'var(--space-3)' },
-  card: { background: 'var(--color-bg-white)', border: '1px solid var(--color-border-light)', borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', textAlign: 'center', cursor: 'pointer', boxShadow: 'var(--shadow-sm)', position: 'relative', transition: 'border-color var(--duration-fast) var(--easing-default)' },
+  grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 'var(--space-3)', alignItems: 'stretch' },
+  card: {
+    background: 'var(--color-bg-white)',
+    border: '1px solid var(--color-border-light)',
+    borderRadius: 'var(--radius-md)',
+    padding: 'var(--space-4)',
+    paddingTop: 'var(--space-5)',
+    textAlign: 'center',
+    cursor: 'pointer',
+    boxShadow: 'var(--shadow-sm)',
+    position: 'relative',
+    transition: 'border-color var(--duration-fast) var(--easing-default)',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    height: '100%',
+    width: '100%',
+  },
   cardBadge: { position: 'absolute', top: 'var(--space-2)', right: 'var(--space-2)' },
-  cardIcon: { width: 48, height: 48, margin: '0 auto var(--space-3)', borderRadius: '12px', overflow: 'hidden', background: 'var(--color-bg-lighter)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  cardBody: { display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1, width: '100%' },
+  cardIcon: { width: 48, height: 48, flexShrink: 0, marginBottom: 'var(--space-3)', borderRadius: '12px', overflow: 'hidden', background: 'var(--color-bg-lighter)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   iconImg: { width: '100%', height: '100%', objectFit: 'cover' },
   iconInitials: {
     width: '100%',
@@ -142,7 +161,29 @@ const styles = {
     letterSpacing: '0.04em',
     fontFamily: 'var(--font-heading, system-ui, sans-serif)',
   },
-  cardName: { fontWeight: 'var(--font-weight-semibold)', marginBottom: 'var(--space-1)', color: 'var(--color-text-charcoal)' },
-  cardDesc: { fontSize: 'var(--text-xs)', color: 'var(--color-text-steel)', lineHeight: 'var(--line-height-default)' },
-  redirecting: { marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--color-primary)' },
+  cardName: {
+    fontWeight: 'var(--font-weight-semibold)',
+    fontSize: 'var(--text-small)',
+    lineHeight: 'var(--line-height-default)',
+    marginBottom: 'var(--space-1)',
+    color: 'var(--color-text-charcoal)',
+    width: '100%',
+    minHeight: 'calc(2 * var(--text-small) * var(--line-height-default))',
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+  },
+  cardDesc: {
+    fontSize: 'var(--text-xs)',
+    color: 'var(--color-text-steel)',
+    lineHeight: 'var(--line-height-default)',
+    width: '100%',
+    minHeight: 'calc(3 * var(--text-xs) * var(--line-height-default))',
+    display: '-webkit-box',
+    WebkitLineClamp: 3,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+  },
+  redirecting: { marginTop: 'auto', paddingTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--color-primary)' },
 };
