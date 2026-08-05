@@ -80,6 +80,22 @@ describe('Login MFA magic link', () => {
     expect(me.status).toBe(401);
   });
 
+  runTest('POST /magic-link/verify succeeds when password expiry policy is enabled', async () => {
+    await passwordPolicyDb.update(pool, { password_expiry_days: 90 });
+
+    const email = `magic-expiry-policy-${Date.now()}@example.com`;
+    const password = 'MagicMfa1!';
+    const user = await registerUser(email, password);
+    const rawToken = crypto.randomBytes(32).toString('base64url');
+    await insertKnownMagicLink(user.id, rawToken);
+
+    const verify = await request(app).post('/api/auth/magic-link/verify').send({ token: rawToken });
+    expect(verify.status).toBe(200);
+    expect(verify.body.user.email).toBe(email);
+
+    await passwordPolicyDb.update(pool, { password_expiry_days: 0 });
+  });
+
   runTest('POST /magic-link/verify issues session and hub_device cookie', async () => {
     const email = `magic-verify-${Date.now()}@example.com`;
     const password = 'MagicMfa1!';

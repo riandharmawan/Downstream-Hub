@@ -31,8 +31,7 @@ export default function MagicLinkLogin() {
         navigate('/', { replace: true });
       } catch (err) {
         if (err.code === 'PASSWORD_EXPIRED') {
-          setError('Your password has expired. Please use password sign-in and update your password.');
-          setMessage('');
+          navigate('/change-password-expired', { replace: true });
           return;
         }
         if (err.status === 423 && err.code === 'ACCOUNT_LOCKED') {
