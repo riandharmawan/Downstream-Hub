@@ -124,6 +124,9 @@ input {
 
 /* Dashboard — application cards */
 .dashboard-app-card {
+  background: var(--color-bg-white);
+  border: 1px solid var(--color-border-light);
+  box-shadow: var(--shadow-sm);
   transition:
     background-color var(--duration-fast) var(--easing-default),
     border-color var(--duration-fast) var(--easing-default),
@@ -131,7 +134,7 @@ input {
 }
 
 .dashboard-app-card:hover:not(:disabled) {
-  background: var(--color-bg-lighter);
+  background: var(--color-secondary-hover);
   border-color: var(--color-border-medium);
   box-shadow: var(--shadow-md);
 }
