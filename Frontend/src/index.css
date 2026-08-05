@@ -121,3 +121,27 @@ input {
   font-size: var(--text-xs);
   line-height: 1.3;
 }
+
+/* Dashboard — application cards */
+.dashboard-app-card {
+  transition:
+    background-color var(--duration-fast) var(--easing-default),
+    border-color var(--duration-fast) var(--easing-default),
+    box-shadow var(--duration-fast) var(--easing-default);
+}
+
+.dashboard-app-card:hover:not(:disabled) {
+  background: var(--color-bg-lighter);
+  border-color: var(--color-border-medium);
+  box-shadow: var(--shadow-md);
+}
+
+.dashboard-app-card:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.dashboard-app-card:disabled {
+  cursor: wait;
+  opacity: 0.85;
+}

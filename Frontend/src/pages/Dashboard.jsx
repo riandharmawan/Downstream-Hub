@@ -83,6 +83,7 @@ export default function Dashboard() {
               <button
                 key={app.id}
                 type="button"
+                className="dashboard-app-card"
                 style={styles.card}
                 onClick={() => handleAppClick(app)}
                 disabled={!!redirecting}
@@ -137,7 +138,6 @@ const styles = {
     cursor: 'pointer',
     boxShadow: 'var(--shadow-sm)',
     position: 'relative',
-    transition: 'border-color var(--duration-fast) var(--easing-default)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'stretch',
