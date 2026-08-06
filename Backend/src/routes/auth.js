@@ -185,6 +185,54 @@ async function sendLoginMagicLink(req, user) {
   return { pendingId, expiresIn: Math.floor(LOGIN_MAGIC_LINK_TTL_MS / 1000) };
 }
 
+const MAGIC_LINK_INVALID_ERROR =
+  'This sign-in link is no longer valid. Use the latest email or sign in again.';
+
+async function classifyMagicLinkFailure(rawToken) {
+  const tokenHash = hashToken(rawToken);
+  const row = await magicLinkDb.findByHash(pool, tokenHash);
+  if (!row) return { reason: 'not_found' };
+  if (row.used_at) {
+    const superseded = await magicLinkDb.hasNewerTokenForUser(pool, row.user_id, row.created_at);
+    return { reason: superseded ? 'superseded' : 'reused', row };
+  }
+  if (new Date(row.expires_at) <= new Date()) return { reason: 'expired', row };
+  return { reason: 'invalid', row };
+}
+
+async function auditMagicLinkVerifyFailure(req, failure) {
+  let userEmail = null;
+  const userId = failure.row?.user_id || null;
+  if (userId) {
+    const user = await usersDb.getById(pool, userId);
+    userEmail = user?.email || null;
+  }
+  const client = await pool.connect();
+  try {
+    await auditLog(client, {
+      actorId: userId,
+      actionType: 'LOGIN_MFA_MAGIC_LINK_VERIFY_FAILED',
+      targetEntity: userEmail,
+      payloadBefore: null,
+      payloadAfter: {
+        reason: failure.reason,
+        token_id: failure.row?.id || null,
+      },
+      ipAddress: getClientIp(req),
+    });
+  } finally {
+    client.release();
+  }
+}
+
+async function rejectMagicLinkVerify(req, res, failure) {
+  await auditMagicLinkVerifyFailure(req, failure);
+  return res.status(400).json({
+    error: MAGIC_LINK_INVALID_ERROR,
+    code: 'MAGIC_LINK_INVALID',
+  });
+}
+
 async function tryLegacyOtpMfa(req, res, user, policy) {
   if (!(MFA_ENABLED && user.mfa_enabled && user.mfa_method === 'email_otp')) return false;
   const deviceHash = deviceHashFromRequest(req);
@@ -554,10 +602,15 @@ router.post('/magic-link/verify', magicLinkVerifyLimit, async (req, res) => {
 
     const tokenHash = hashToken(rawToken);
     const row = await magicLinkDb.findActiveByHash(pool, tokenHash);
-    if (!row) return res.status(400).json({ error: 'Invalid or expired link' });
+    if (!row) {
+      const failure = await classifyMagicLinkFailure(rawToken);
+      return rejectMagicLinkVerify(req, res, failure);
+    }
 
     const user = await usersDb.getById(pool, row.user_id);
-    if (!user) return res.status(400).json({ error: 'Invalid or expired link' });
+    if (!user) {
+      return rejectMagicLinkVerify(req, res, { reason: 'user_not_found', row });
+    }
     if (user.locked_until && new Date(user.locked_until) > new Date()) {
       return res.status(423).json({ error: 'Account locked', code: 'ACCOUNT_LOCKED', locked_until: user.locked_until });
     }

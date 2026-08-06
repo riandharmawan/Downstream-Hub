@@ -3,6 +3,9 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { apiRequest } from '../api';
 import { useAuth } from '../context/AuthContext';
 
+const MAGIC_LINK_INVALID_MESSAGE =
+  'This link was replaced by a newer sign-in request. Use the latest email or sign in again.';
+
 export default function MagicLinkLogin() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -22,7 +25,7 @@ export default function MagicLinkLogin() {
       try {
         const info = await apiRequest(`/api/auth/magic-link/token-info?token=${encodeURIComponent(token)}`);
         if (!info.valid) {
-          setError('This sign-in link is invalid or has expired.');
+          setError(MAGIC_LINK_INVALID_MESSAGE);
           setMessage('');
           return;
         }
@@ -40,7 +43,11 @@ export default function MagicLinkLogin() {
           setMessage('');
           return;
         }
-        setError(err.error || 'Failed to complete magic link sign-in.');
+        if (err.status === 400 && (err.code === 'MAGIC_LINK_INVALID' || /invalid|expired|link/i.test(err.error || ''))) {
+          setError(MAGIC_LINK_INVALID_MESSAGE);
+        } else {
+          setError(err.error || 'Failed to complete magic link sign-in.');
+        }
         setMessage('');
       }
     }

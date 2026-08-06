@@ -169,6 +169,16 @@ describe('Login MFA magic link', () => {
 
     const second = await request(app).post('/api/auth/magic-link/verify').send({ token: rawToken });
     expect(second.status).toBe(400);
+    expect(second.body.code).toBe('MAGIC_LINK_INVALID');
+
+    const audit = await pool.query(
+      `SELECT payload_after FROM audit_logs
+       WHERE action_type = 'LOGIN_MFA_MAGIC_LINK_VERIFY_FAILED'
+         AND target_entity = $1
+       ORDER BY created_at DESC LIMIT 1`,
+      [email]
+    );
+    expect(audit.rows[0]?.payload_after?.reason).toBe('reused');
   });
 
   runTest('expired magic link token is rejected', async () => {
@@ -187,6 +197,38 @@ describe('Login MFA magic link', () => {
 
     const res = await request(app).post('/api/auth/magic-link/verify').send({ token: rawToken });
     expect(res.status).toBe(400);
+    expect(res.body.code).toBe('MAGIC_LINK_INVALID');
+
+    const audit = await pool.query(
+      `SELECT payload_after FROM audit_logs
+       WHERE action_type = 'LOGIN_MFA_MAGIC_LINK_VERIFY_FAILED'
+         AND target_entity = $1
+       ORDER BY created_at DESC LIMIT 1`,
+      [email]
+    );
+    expect(audit.rows[0]?.payload_after?.reason).toBe('expired');
+  });
+
+  runTest('superseded magic link token is rejected and audited', async () => {
+    const email = `magic-superseded-${Date.now()}@example.com`;
+    const password = 'MagicMfaPass1!';
+    const user = await registerUser(email, password);
+    const oldToken = crypto.randomBytes(32).toString('base64url');
+    await insertKnownMagicLink(user.id, oldToken);
+    await insertKnownMagicLink(user.id, crypto.randomBytes(32).toString('base64url'));
+
+    const res = await request(app).post('/api/auth/magic-link/verify').send({ token: oldToken });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('MAGIC_LINK_INVALID');
+
+    const audit = await pool.query(
+      `SELECT payload_after FROM audit_logs
+       WHERE action_type = 'LOGIN_MFA_MAGIC_LINK_VERIFY_FAILED'
+         AND target_entity = $1
+       ORDER BY created_at DESC LIMIT 1`,
+      [email]
+    );
+    expect(audit.rows[0]?.payload_after?.reason).toBe('superseded');
   });
 
   runTest('calendar_day bypass mode resets after midnight UTC', async () => {

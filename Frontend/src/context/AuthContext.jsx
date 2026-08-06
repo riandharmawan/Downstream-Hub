@@ -1,13 +1,23 @@
 import { createContext, useContext, useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { apiRequest } from '../api';
 
 const AuthContext = createContext(null);
 
+/** Paths where an unauthenticated visitor is expected — skip /api/auth/me to avoid noisy 401s. */
+const PUBLIC_AUTH_PATHS = new Set(['/login', '/magic-link-login']);
+
 export function AuthProvider({ children }) {
+  const location = useLocation();
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (PUBLIC_AUTH_PATHS.has(location.pathname)) {
+      setUser(null);
+      setLoading(false);
+      return undefined;
+    }
     setLoading(true);
     apiRequest('/api/auth/me')
       .then((data) => setUser(data.user))
@@ -15,7 +25,8 @@ export function AuthProvider({ children }) {
         setUser(null);
       })
       .finally(() => setLoading(false));
-  }, []);
+    return undefined;
+  }, [location.pathname]);
 
   const login = async (email, password) => {
     const data = await apiRequest('/api/auth/login', {
