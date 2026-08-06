@@ -21,7 +21,6 @@ const mfaDb = require('../db/mfaDb');
 const magicLinkDb = require('../db/magicLinkDb');
 const ssoLinkService = require('../services/ssoLinkService');
 const { validatePassword } = require('../lib/passwordValidation');
-const { signAccessToken } = require('../lib/authToken');
 const deviceTrust = require('../lib/deviceTrust');
 const { authMiddleware } = require('../middleware/auth');
 const { auditLog, getClientIp } = require('../middleware/audit');
@@ -30,7 +29,14 @@ const mailer = require('../lib/mailer');
 const router = express.Router();
 const SESSION_COOKIE = process.env.AUTH_SESSION_COOKIE || 'hub_session';
 const CSRF_COOKIE = process.env.AUTH_CSRF_COOKIE || 'hub_csrf';
-const SESSION_TTL_MS = Math.max(10 * 60 * 1000, parseInt(process.env.AUTH_SESSION_TTL_MS || '604800000', 10));
+const SESSION_TTL_MS = Math.max(10 * 60 * 1000, parseInt(process.env.AUTH_SESSION_TTL_MS || '86400000', 10));
+
+function isOpenRegistrationEnabled() {
+  const v = process.env.OPEN_REGISTRATION;
+  if (v === '1' || v === 'true') return true;
+  if (v === '0' || v === 'false') return false;
+  return process.env.NODE_ENV === 'test';
+}
 const MFA_CHALLENGE_TTL_SECONDS = Math.max(60, parseInt(process.env.MFA_CHALLENGE_TTL_SECONDS || '300', 10));
 const MFA_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.MFA_MAX_ATTEMPTS || '5', 10));
 const MFA_ENABLED = process.env.MFA_ENABLED === '1';
@@ -94,7 +100,6 @@ function hashToken(raw) {
 }
 
 async function issueFullSession(req, res, user, auditAction = 'LOGIN') {
-  const token = signAccessToken(user);
   const sessionToken = generateSessionToken();
   const csrfToken = generateSessionToken();
   await authSessionsDb.create(pool, {
@@ -118,7 +123,6 @@ async function issueFullSession(req, res, user, auditAction = 'LOGIN') {
     client.release();
   }
   return {
-    token,
     user: { id: user.id, email: user.email, role: user.role, business_unit_id: user.business_unit_id },
   };
 }
@@ -315,11 +319,14 @@ const magicLinkVerifyLimit = rateLimit({
   legacyHeaders: false,
 });
 
-// GET /api/auth/registration-options — public; returns BUs for registration dropdown
+// GET /api/auth/registration-options — only when open registration is enabled
 router.get('/registration-options', async (req, res) => {
+  if (!isOpenRegistrationEnabled()) {
+    return res.status(403).json({ error: 'Registration is disabled. Contact an administrator.' });
+  }
   try {
     const business_units = await businessUnitsDb.list(pool);
-    res.json({ business_units });
+    res.json({ business_units: business_units.map((bu) => ({ id: bu.id, name: bu.name })) });
   } catch (err) {
     console.error('Registration options error:', err);
     res.status(500).json({ error: 'Failed to load registration options' });
@@ -328,6 +335,9 @@ router.get('/registration-options', async (req, res) => {
 
 // POST /api/auth/register
 router.post('/register', registerLimit, async (req, res) => {
+  if (!isOpenRegistrationEnabled()) {
+    return res.status(403).json({ error: 'Registration is disabled. Contact an administrator.' });
+  }
   try {
     const { email, password, password_retype, business_unit_id } = req.body || {};
     if (!email || !password) {
@@ -365,17 +375,8 @@ router.post('/register', registerLimit, async (req, res) => {
     const n = await usersDb.countActive(pool);
     const role = n === 0 ? 'Admin' : 'Employee';
     const user = await usersDb.create(pool, { email: emailNorm, password_hash, role, business_unit_id: buId });
-    const token = signAccessToken(user);
-    const sessionToken = generateSessionToken();
-    const csrfToken = generateSessionToken();
-    await authSessionsDb.create(pool, {
-      userId: user.id,
-      sessionToken,
-      csrfToken,
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
-    });
-    setSessionCookies(req, res, sessionToken, csrfToken);
-    res.status(201).json({ user: { id: user.id, email: user.email, role: user.role, business_unit_id: user.business_unit_id }, token });
+    const session = await issueFullSession(req, res, user, 'REGISTER');
+    res.status(201).json(session);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
     console.error('Register error:', err);
@@ -686,31 +687,8 @@ router.post('/change-password-expired', async (req, res) => {
       const password_hash = await bcrypt.hash(new_password, 10);
       await usersDb.updatePassword(pool, user.id, password_hash);
     }
-    const tv = await usersDb.getTokenVersion(pool, user.id);
-    const token = signAccessToken({ id: user.id, email: user.email, role: user.role, token_version: tv });
-    const sessionToken = generateSessionToken();
-    const csrfToken = generateSessionToken();
-    await authSessionsDb.create(pool, {
-      userId: user.id,
-      sessionToken,
-      csrfToken,
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
-    });
-    setSessionCookies(req, res, sessionToken, csrfToken);
-    const client = await pool.connect();
-    try {
-      await auditLog(client, {
-        actorId: user.id,
-        actionType: 'PASSWORD_CHANGE',
-        targetEntity: `user:${user.email}`,
-        payloadBefore: null,
-        payloadAfter: null,
-        ipAddress: getClientIp(req),
-      });
-    } finally {
-      client.release();
-    }
-    res.json({ message: 'Password updated', token, user: { id: user.id, email: user.email, role: user.role, business_unit_id: user.business_unit_id } });
+    const session = await issueFullSession(req, res, user, 'PASSWORD_CHANGE');
+    res.json({ message: 'Password updated', ...session });
   } catch (err) {
     console.error('Change password expired error:', err);
     res.status(500).json({ error: 'Failed to update password' });

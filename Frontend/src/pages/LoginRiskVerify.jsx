@@ -31,7 +31,7 @@ export default function LoginRiskVerify() {
           method: 'POST',
           body: JSON.stringify({ token }),
         });
-        setSession(result.token, result.user);
+        setSession(null, result.user);
         navigate('/', { replace: true });
       } catch (err) {
         setError(err.error || 'Failed to verify login context.');

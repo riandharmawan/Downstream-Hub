@@ -4,7 +4,7 @@
  */
 const DEFAULTS = {
   password_expiry_days: 0,
-  min_password_length: 6,
+  min_password_length: 12,
   require_uppercase: true,
   require_lowercase: true,
   require_number: true,
@@ -58,7 +58,7 @@ async function update(db, payload) {
     values.push(days);
   }
   if (payload.min_password_length !== undefined) {
-    const v = Math.max(6, Math.min(128, parseInt(String(payload.min_password_length), 10) || 6));
+    const v = Math.max(12, Math.min(128, parseInt(String(payload.min_password_length), 10) || 12));
     updates.push(`min_password_length = $${idx++}`);
     values.push(v);
   }

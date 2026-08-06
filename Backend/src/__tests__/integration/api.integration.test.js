@@ -16,6 +16,7 @@ const { pool } = require('../../db/pool');
 const { runMigrations } = require('../../db/migrate');
 const passwordResetDb = require('../../db/passwordResetDb');
 const oidcDb = require('../../db/oidcDb');
+const { bearerFromAuthResponse, bearerTokenForUser } = require('../helpers/authTestHelpers');
 
 function toBase64Url(buf) {
   return Buffer.from(buf).toString('base64url');
@@ -81,16 +82,16 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(res.body.error).toMatch(/invalid email format/i);
     });
 
-    test('POST /api/auth/register — password length < 6 returns 400', async () => {
+    test('POST /api/auth/register — password length < 12 returns 400', async () => {
       const res = await request(app)
         .post('/api/auth/register')
         .send({
           email: 'test@example.com',
-          password: '12345',
-          password_retype: '12345',
+          password: '12345678901',
+          password_retype: '12345678901',
         });
-      expect([400, 500]).toContain(res.status);
-      if (res.status === 400) expect(res.body.error).toMatch(/at least 6 characters/i);
+      expect([400, 403, 500]).toContain(res.status);
+      if (res.status === 400) expect(res.body.error).toMatch(/at least 12 characters/i);
     });
 
     test('POST /api/auth/login — missing credentials returns 400', async () => {
@@ -101,6 +102,25 @@ describe('API Integration (TEST-PLAN)', () => {
   });
 
   describe('Auth — with DB', () => {
+    test('POST /api/auth/register — disabled when OPEN_REGISTRATION=0', async () => {
+      const prev = process.env.OPEN_REGISTRATION;
+      process.env.OPEN_REGISTRATION = '0';
+      try {
+        const res = await request(app)
+          .post('/api/auth/register')
+          .send({
+            email: 'disabled-reg@example.com',
+            password: 'DisabledReg1!',
+            password_retype: 'DisabledReg1!',
+          });
+        expect(res.status).toBe(403);
+        expect(res.body.error).toMatch(/disabled/i);
+      } finally {
+        if (prev === undefined) delete process.env.OPEN_REGISTRATION;
+        else process.env.OPEN_REGISTRATION = prev;
+      }
+    });
+
     test('GET /api/auth/registration-options returns 200 and business_units array (or 500 if DB unavailable)', async () => {
       const res = await request(app).get('/api/auth/registration-options');
       expect([200, 500]).toContain(res.status);
@@ -306,7 +326,7 @@ describe('API Integration (TEST-PLAN)', () => {
       if (res.status !== 201) {
         res = await request(app).post('/api/auth/login').send({ email: adminEmail, password: adminPass });
       }
-      ssoModeAdminToken = res.body.token;
+      ssoModeAdminToken = await bearerFromAuthResponse(pool, res);
 
       const userEmail = `sso-mode-user-${Date.now()}@example.com`;
       const userPass = 'SsoModeUser1!';
@@ -315,7 +335,7 @@ describe('API Integration (TEST-PLAN)', () => {
         .send({ email: userEmail, password: userPass, password_retype: userPass });
       ssoModeUserId = userReg.body?.user?.id;
       const loginRes = await request(app).post('/api/auth/login').send({ email: userEmail, password: userPass });
-      ssoModeUserToken = loginRes.body?.token;
+      ssoModeUserToken = await bearerFromAuthResponse(pool, loginRes);
 
       const appRes = await request(app)
         .post('/api/applications')
@@ -450,7 +470,7 @@ describe('API Integration (TEST-PLAN)', () => {
         }
         res = await request(app).post('/api/auth/login').send({ email: adminEmail, password: adminPass });
         expect(res.status).toBe(200);
-        adminToken = res.body.token;
+        adminToken = await bearerFromAuthResponse(pool, res);
         adminUserId = res.body.user?.id || adminUserId;
 
         const buRes = await request(app)
@@ -468,7 +488,7 @@ describe('API Integration (TEST-PLAN)', () => {
         });
         expect(res.status).toBe(201);
         employeeUserId = res.body.user.id;
-        employeeToken = res.body.token;
+        employeeToken = await bearerFromAuthResponse(pool, res);
       } catch (e) {
         console.warn('Users PATCH setup failed:', e.message);
         adminToken = null;
@@ -557,7 +577,7 @@ describe('API Integration (TEST-PLAN)', () => {
       });
       expect(res.status).toBe(201);
       const userId = res.body.user.id;
-      const oldToken = res.body.token;
+      const oldToken = await bearerFromAuthResponse(pool, res);
 
       res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${oldToken}`);
       expect(res.status).toBe(200);
@@ -591,9 +611,9 @@ describe('API Integration (TEST-PLAN)', () => {
 
       res = await request(app).post('/api/auth/login').send({ email, password: newPass });
       expect(res.status).toBe(200);
-      expect(res.body.token).toBeDefined();
+      expect(res.body.user).toBeDefined();
 
-      const newTok = res.body.token;
+      const newTok = await bearerFromAuthResponse(pool, res);
       res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${newTok}`);
       expect(res.status).toBe(200);
     });
@@ -647,7 +667,7 @@ describe('API Integration (TEST-PLAN)', () => {
             throw new Error(res.body?.error || `Register failed with ${res.status}`);
           }
         }
-        adminToken = res.body.token;
+        adminToken = await bearerFromAuthResponse(pool, res);
         const usersRes = await request(app).get('/api/users').set('Authorization', `Bearer ${adminToken}`);
         if (usersRes.status === 403) adminToken = null;
       } catch (e) {
@@ -678,7 +698,7 @@ describe('API Integration (TEST-PLAN)', () => {
         password_retype: 'StrongPass1!',
       });
       expect(res.status).toBe(201);
-      expect(res.body.token).toBeDefined();
+      expect(res.body.user).toBeDefined();
     });
 
     runSecurityTest('POST /api/auth/change-password — reuse of recent password rejected', async () => {
@@ -686,7 +706,7 @@ describe('API Integration (TEST-PLAN)', () => {
       const first = 'ReusePass1!';
       let res = await request(app).post('/api/auth/register').send({ email, password: first, password_retype: first });
       expect(res.status).toBe(201);
-      const token = res.body.token;
+      const token = await bearerFromAuthResponse(pool, res);
       await request(app).put('/api/settings/password-policy').set('Authorization', `Bearer ${adminToken}`).send({ password_history_count: 2 });
       res = await request(app).post('/api/auth/change-password').set('Authorization', `Bearer ${token}`).send({
         current_password: first,
@@ -710,7 +730,7 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(res.body.error).toMatch(/reuse|recent/i);
     });
 
-    runSecurityTest.skip('POST /api/auth/login — lockout after N failures returns 423', async () => {
+    test.skip('POST /api/auth/login — lockout after N failures returns 423', async () => {
       const email = `lockout-${Date.now()}@example.com`;
       const pass = 'LockoutPass1!';
       let res = await request(app).post('/api/auth/register').send({ email, password: pass, password_retype: pass });
@@ -723,7 +743,7 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(res.body.locked_until).toBeDefined();
     });
 
-    runSecurityTest.skip('POST /api/auth/login — correct password still 423 when locked', async () => {
+    test.skip('POST /api/auth/login — correct password still 423 when locked', async () => {
       const email = `locked-${Date.now()}@example.com`;
       const pass = 'LockedPass1!';
       let res = await request(app).post('/api/auth/register').send({ email, password: pass, password_retype: pass });
@@ -748,10 +768,10 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(res.status).toBe(200);
       res = await request(app).post('/api/auth/login').send({ email, password: pass });
       expect(res.status).toBe(200);
-      expect(res.body.token).toBeDefined();
+      expect(res.body.user).toBeDefined();
     });
 
-    runSecurityTest.skip('POST /api/auth/login — success resets failed attempts', async () => {
+    test.skip('POST /api/auth/login — success resets failed attempts', async () => {
       const email = `reset-${Date.now()}@example.com`;
       const pass = 'ResetPass1!';
       let res = await request(app).post('/api/auth/register').send({ email, password: pass, password_retype: pass });
@@ -792,7 +812,7 @@ describe('API Integration (TEST-PLAN)', () => {
         // Already exists — just login
         res = await request(app).post('/api/auth/login').send({ email: adminEmail, password: adminPass });
       }
-      adminToken2 = res.body.token;
+      adminToken2 = await bearerFromAuthResponse(pool, res);
 
       // Create two BUs
       const buARes = await request(app).post('/api/business-units').set('Authorization', `Bearer ${adminToken2}`).send({ name: `BU-A-${Date.now()}` });
@@ -826,7 +846,7 @@ describe('API Integration (TEST-PLAN)', () => {
           await request(app).patch(`/api/users/${userId}`).set('Authorization', `Bearer ${adminToken2}`).send({ business_unit_id: buAId });
         }
         const loginRes = await request(app).post('/api/auth/login').send({ email: userEmail, password: userPass });
-        userBuAToken = loginRes.body?.token;
+        userBuAToken = await bearerFromAuthResponse(pool, loginRes);
       }
     });
 
@@ -846,6 +866,10 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(res.status).toBe(200);
       const ids = res.body.applications.map((a) => a.id);
       expect(ids).toContain(appGlobalId);
+      const app = res.body.applications.find((a) => a.id === appGlobalId);
+      expect(app.oauth_client_id).toBeUndefined();
+      expect(app.target_url).toBeUndefined();
+      expect(app.oidc_redirect_uris).toBeUndefined();
     });
 
     runAppTest('GET /api/applications/for-me — user in BU-A sees scoped app targeted to BU-A', async () => {
@@ -888,6 +912,12 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(scoped).toBeDefined();
       expect(Array.isArray(scoped.target_bu_ids)).toBe(true);
       expect(scoped.target_bu_ids).toContain(buAId);
+    });
+
+    runAppTest('GET /api/applications — Employee returns 403', async () => {
+      if (!userBuAToken) return;
+      const res = await request(app).get('/api/applications').set('Authorization', `Bearer ${userBuAToken}`);
+      expect(res.status).toBe(403);
     });
   });
 });

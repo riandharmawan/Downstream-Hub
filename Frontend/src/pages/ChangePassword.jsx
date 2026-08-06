@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
 
 export default function ChangePassword() {
-  const { user, token, logout } = useAuth();
+  const { user, logout } = useAuth();
   const [searchParams] = useSearchParams();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -21,7 +21,7 @@ export default function ChangePassword() {
     let ignore = false;
     async function loadStatus() {
       try {
-        const data = await apiRequest('/api/users/me/sso-status', {}, token);
+        const data = await apiRequest('/api/users/me/sso-status');
         if (!ignore) {
           setSsoStatus({
             loading: false,
@@ -39,7 +39,7 @@ export default function ChangePassword() {
     return () => {
       ignore = true;
     };
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     const verifyToken = searchParams.get('sso_verify');
@@ -49,10 +49,10 @@ export default function ChangePassword() {
       setSsoSubmitting(true);
       setSsoError('');
       try {
-        await apiRequest(`/api/users/sso/verify?token=${encodeURIComponent(verifyToken)}`, {}, token);
+        await apiRequest(`/api/users/sso/verify?token=${encodeURIComponent(verifyToken)}`);
         if (!ignore) {
           setSsoMessage('SSO linked successfully. You can sign in with either password or SSO.');
-          const data = await apiRequest('/api/users/me/sso-status', {}, token);
+          const data = await apiRequest('/api/users/me/sso-status');
           setSsoStatus({
             loading: false,
             linked: !!data.linked,
@@ -70,7 +70,7 @@ export default function ChangePassword() {
     return () => {
       ignore = true;
     };
-  }, [searchParams, token]);
+  }, [searchParams]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -80,8 +80,8 @@ export default function ChangePassword() {
       setError('New password and confirm do not match');
       return;
     }
-    if (newPassword.length < 6) {
-      setError('New password must be at least 6 characters');
+    if (newPassword.length < 12) {
+      setError('New password must be at least 12 characters');
       return;
     }
     setSubmitting(true);
@@ -93,7 +93,7 @@ export default function ChangePassword() {
           new_password: newPassword,
           new_password_retype: newPasswordRetype,
         }),
-      }, token);
+      });
       setSuccess(true);
       setCurrentPassword('');
       setNewPassword('');
@@ -110,7 +110,7 @@ export default function ChangePassword() {
     setSsoError('');
     setSsoMessage('');
     try {
-      const data = await apiRequest('/api/users/me/sso-connect/start', { method: 'POST' }, token);
+      const data = await apiRequest('/api/users/me/sso-connect/start', { method: 'POST' });
       setSsoMessage(data.message || 'Verification email sent. Please open the link in your inbox.');
     } catch (err) {
       setSsoError(err.error || 'Failed to start SSO connect');
@@ -124,7 +124,7 @@ export default function ChangePassword() {
     setSsoError('');
     setSsoMessage('');
     try {
-      await apiRequest('/api/users/me/sso-unlink', { method: 'POST' }, token);
+      await apiRequest('/api/users/me/sso-unlink', { method: 'POST' });
       setSsoStatus((s) => ({ ...s, linked: false, subjectFingerprint: null, linkedAt: null, linkedByMode: null }));
       setSsoMessage('SSO unlinked for this account.');
     } catch (err) {
@@ -182,7 +182,7 @@ export default function ChangePassword() {
             />
             <input
               type="password"
-              placeholder="New password (min 6 characters)"
+              placeholder="New password (min 12 characters)"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               required

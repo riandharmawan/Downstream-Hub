@@ -17,6 +17,13 @@ function ensureUploadDirs() {
 
 async function start() {
   await loadSecrets();
+  if (process.env.NODE_ENV === 'production') {
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret || jwtSecret === 'dev-secret-change-in-production') {
+      console.error('JWT_SECRET must be set to a strong value in production');
+      process.exit(1);
+    }
+  }
   ensureUploadDirs();
   if (process.env.DATABASE_URL) {
     try {

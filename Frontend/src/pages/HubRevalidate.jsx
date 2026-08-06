@@ -8,7 +8,7 @@ export default function HubRevalidate() {
   const [searchParams] = useSearchParams();
   const token = useMemo(() => searchParams.get('token') || '', [searchParams]);
   const reason = useMemo(() => searchParams.get('reason') || '', [searchParams]);
-  const { verifyHubSessionToken, requestHubSessionRevalidationEmail, token: authToken } = useAuth();
+  const { user } = useAuth();
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
@@ -25,7 +25,10 @@ export default function HubRevalidate() {
           setMessage('');
           return;
         }
-        await verifyHubSessionToken(token);
+        await apiRequest('/api/auth/hub-session-revalidation/verify', {
+          method: 'POST',
+          body: JSON.stringify({ token }),
+        });
         navigate('/', { replace: true });
       } catch (err) {
         setError(err.error || 'Failed to confirm session.');
@@ -33,13 +36,13 @@ export default function HubRevalidate() {
       }
     }
     runVerify();
-  }, [token, verifyHubSessionToken, navigate]);
+  }, [token, navigate]);
 
   async function handleResend() {
     setError('');
     setSending(true);
     try {
-      const result = await requestHubSessionRevalidationEmail();
+      const result = await apiRequest('/api/auth/hub-session-revalidation/request', { method: 'POST' });
       setMessage(result.message || 'Check your email for the session confirmation link.');
     } catch (err) {
       setError(err.error || 'Could not send email.');
@@ -80,7 +83,7 @@ export default function HubRevalidate() {
         )}
         {message && <div style={styles.success}>{message}</div>}
         {error && <div style={styles.error}>{error}</div>}
-        {reason === 'session' && authToken && (
+        {reason === 'session' && user && (
           <button type="button" className="btn-primary" style={styles.button} disabled={sending} onClick={handleResend}>
             {sending ? 'Sending…' : 'Email me the confirmation link'}
           </button>

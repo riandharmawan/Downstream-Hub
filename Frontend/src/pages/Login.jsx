@@ -161,9 +161,6 @@ export default function Login() {
         <p style={styles.footer}>
           <Link to="/forgot-password">Forgot password?</Link>
         </p>
-        <p style={styles.footer}>
-          Don’t have an account? <Link to="/register">Register</Link>
-        </p>
       </div>
     </div>
   );

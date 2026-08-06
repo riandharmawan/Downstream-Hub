@@ -8,27 +8,25 @@ import SsoBadge from '../components/SsoBadge';
 import HubLogo from '../components/HubLogo';
 
 export default function Dashboard() {
-  const { user, token, logout } = useAuth();
+  const { user, logout } = useAuth();
   const [applications, setApplications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [redirecting, setRedirecting] = useState(null);
 
   useEffect(() => {
-    apiRequest('/api/applications/for-me', {}, token)
+    apiRequest('/api/applications/for-me')
       .then((data) => setApplications(data.applications || []))
       .catch((err) => setError(err.error || 'Failed to load applications'))
       .finally(() => setLoading(false));
-  }, [token]);
+  }, []);
 
   async function handleAppClick(app) {
     setRedirecting(app.id);
     setError('');
     try {
       const { bridgeUrl } = await apiRequest(
-        `/api/sso/redirect?applicationId=${encodeURIComponent(app.id)}`,
-        {},
-        token
+        `/api/sso/redirect?applicationId=${encodeURIComponent(app.id)}`
       );
       // Do not pass noopener in open() — with noopener many browsers return null even when the tab opens,
       // which falsely looked like "popup blocked". Open first, then drop opener reference.

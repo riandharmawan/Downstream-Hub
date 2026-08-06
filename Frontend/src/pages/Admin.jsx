@@ -41,7 +41,7 @@ const LOGIN_MFA_BYPASS_TIMEZONES = [
 ];
 
 export default function Admin() {
-  const { user, token, logout } = useAuth();
+  const { user, logout } = useAuth();
   const { section } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -137,44 +137,44 @@ export default function Admin() {
   // Applications + BUs load eagerly — BUs are shared across sections (forms, filters)
   useEffect(() => {
     if (user?.role !== 'Admin') return;
-    apiRequest('/api/applications', {}, token)
+    apiRequest('/api/applications')
       .then((data) => setApplications(data.applications || []))
       .catch((err) => setError(err.error || 'Failed to load'))
       .finally(() => setLoading(false));
-  }, [token, user?.role]);
+  }, [user?.role]);
 
   // Domains — load only when on domains section
   useEffect(() => {
     if (user?.role !== 'Admin' || activeSection !== 'domains') return;
-    apiRequest('/api/allowed-domains', {}, token)
+    apiRequest('/api/allowed-domains', {})
       .then((data) => setDomains(data.allowed_domains || []))
       .catch(() => setDomains([]))
       .finally(() => setDomainsLoading(false));
-  }, [token, user?.role, activeSection]);
+  }, [user?.role, activeSection]);
 
   useEffect(() => {
     if (user?.role !== 'Admin') return;
-    apiRequest('/api/business-units', {}, token)
+    apiRequest('/api/business-units', {})
       .then((data) => setBusinessUnits(data.business_units || []))
       .catch(() => setBusinessUnits([]))
       .finally(() => setBusLoading(false));
-  }, [token, user?.role]);
+  }, [user?.role]);
 
   // Users — load only when on users section
   useEffect(() => {
     if (user?.role !== 'Admin' || activeSection !== 'users') return;
-    apiRequest('/api/users', {}, token)
+    apiRequest('/api/users', {})
       .then((data) => setUsers(data.users || []))
       .catch(() => setUsers([]))
       .finally(() => setUsersLoading(false));
-  }, [token, user?.role, activeSection]);
+  }, [user?.role, activeSection]);
 
   // Password policy — load only when on password-policy section
   useEffect(() => {
     if (user?.role !== 'Admin' || activeSection !== 'password-policy') return;
     setPolicyLoading(true);
     setPolicySuccess('');
-    apiRequest('/api/settings/password-policy', {}, token)
+    apiRequest('/api/settings/password-policy', {})
       .then((data) => {
         setPasswordExpiryDays(data.password_expiry_days ?? 0);
         setMinPasswordLength(data.min_password_length ?? 6);
@@ -194,7 +194,7 @@ export default function Admin() {
         setError(err.error || 'Failed to load password policy. Restart the backend so migrations can run.');
       })
       .finally(() => setPolicyLoading(false));
-  }, [token, user?.role, activeSection]);
+  }, [user?.role, activeSection]);
 
   // Sync application filter state → URL params (only while on applications section)
   useEffect(() => {
@@ -273,7 +273,7 @@ export default function Admin() {
         login_mfa_bypass_hours: Math.max(1, Math.min(168, parseInt(String(loginMfaBypassHours), 10) || 24)),
         login_mfa_bypass_timezone: String(loginMfaBypassTimezone || 'UTC').trim().slice(0, 64) || 'UTC',
       };
-      const data = await apiRequest('/api/settings/password-policy', { method: 'PUT', body: JSON.stringify(payload) }, token);
+      const data = await apiRequest('/api/settings/password-policy', { method: 'PUT', body: JSON.stringify(payload) });
       if (data.login_mfa_bypass_mode == null) {
         setError('Password policy saved partially. Restart/rebuild the backend so login MFA settings can persist.');
       } else {
@@ -335,7 +335,7 @@ export default function Admin() {
   }
 
   async function loadDomains() {
-    const data = await apiRequest('/api/allowed-domains', {}, token);
+    const data = await apiRequest('/api/allowed-domains', {});
     setDomains(data.allowed_domains || []);
   }
 
@@ -372,12 +372,12 @@ export default function Admin() {
         await apiRequest(`/api/allowed-domains/${editingDomain.id}`, {
           method: 'PUT',
           body: JSON.stringify({ domain }),
-        }, token);
+        });
       } else {
         await apiRequest('/api/allowed-domains', {
           method: 'POST',
           body: JSON.stringify({ domain }),
-        }, token);
+        });
       }
       await loadDomains();
       closeDomainForm();
@@ -392,7 +392,7 @@ export default function Admin() {
     setError('');
     setDomainSaving(true);
     try {
-      await apiRequest(`/api/allowed-domains/${row.id}`, { method: 'DELETE' }, token);
+      await apiRequest(`/api/allowed-domains/${row.id}`, { method: 'DELETE' });
       await loadDomains();
       setDomainDeleteConfirm(null);
     } catch (err) {
@@ -403,7 +403,7 @@ export default function Admin() {
   }
 
   async function loadBusinessUnits() {
-    const data = await apiRequest('/api/business-units', {}, token);
+    const data = await apiRequest('/api/business-units', {});
     setBusinessUnits(data.business_units || []);
   }
 
@@ -437,9 +437,9 @@ export default function Admin() {
         return;
       }
       if (editingBu) {
-        await apiRequest(`/api/business-units/${editingBu.id}`, { method: 'PUT', body: JSON.stringify({ name }) }, token);
+        await apiRequest(`/api/business-units/${editingBu.id}`, { method: 'PUT', body: JSON.stringify({ name }) });
       } else {
-        await apiRequest('/api/business-units', { method: 'POST', body: JSON.stringify({ name }) }, token);
+        await apiRequest('/api/business-units', { method: 'POST', body: JSON.stringify({ name }) });
       }
       await loadBusinessUnits();
       closeBuForm();
@@ -454,7 +454,7 @@ export default function Admin() {
     setError('');
     setBuSaving(true);
     try {
-      await apiRequest(`/api/business-units/${row.id}`, { method: 'DELETE' }, token);
+      await apiRequest(`/api/business-units/${row.id}`, { method: 'DELETE' });
       await loadBusinessUnits();
       setBuDeleteConfirm(null);
     } catch (err) {
@@ -465,7 +465,7 @@ export default function Admin() {
   }
 
   async function loadUsers() {
-    const data = await apiRequest('/api/users', {}, token);
+    const data = await apiRequest('/api/users', {});
     setUsers(data.users || []);
   }
 
@@ -485,7 +485,7 @@ export default function Admin() {
       await apiRequest(`/api/users/${userEdit.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ role: userEditForm.role, business_unit_id: buId }),
-      }, token);
+      });
       await loadUsers();
       setUserEdit(null);
       setUserEditForm({ role: 'Employee', business_unit_id: '' });
@@ -527,7 +527,7 @@ export default function Admin() {
           role: addUserForm.role,
           business_unit_id: addUserForm.business_unit_id === '' ? null : addUserForm.business_unit_id,
         }),
-      }, token);
+      });
       await loadUsers();
       setAddUserForm({ email: '', password: '', password_retype: '', role: 'Employee', business_unit_id: '' });
       closeAddUserForm();
@@ -543,7 +543,7 @@ export default function Admin() {
     if (!userDeactivateConfirm) return;
     setError('');
     try {
-      await apiRequest(`/api/users/${userDeactivateConfirm.id}/deactivate`, { method: 'POST' }, token);
+      await apiRequest(`/api/users/${userDeactivateConfirm.id}/deactivate`, { method: 'POST' });
       await loadUsers();
       setUserDeactivateConfirm(null);
     } catch (err) {
@@ -554,7 +554,7 @@ export default function Admin() {
   async function handleResetPassword(u) {
     setError('');
     try {
-      const data = await apiRequest(`/api/users/${u.id}/reset-password`, { method: 'POST' }, token);
+      const data = await apiRequest(`/api/users/${u.id}/reset-password`, { method: 'POST' });
       setResetPasswordResult({ email: u.email, temporary_password: data.temporary_password });
     } catch (err) {
       setError(err.error || 'Reset password failed');
@@ -564,7 +564,7 @@ export default function Admin() {
   async function handleUnlock(u) {
     setError('');
     try {
-      await apiRequest(`/api/users/${u.id}/unlock`, { method: 'POST' }, token);
+      await apiRequest(`/api/users/${u.id}/unlock`, { method: 'POST' });
       await loadUsers();
     } catch (err) {
       setError(err.error || 'Unlock failed');
@@ -574,7 +574,7 @@ export default function Admin() {
   async function handleGenerateSsoLink(u) {
     setError('');
     try {
-      const data = await apiRequest(`/api/users/${u.id}/sso-link/start`, { method: 'POST' }, token);
+      const data = await apiRequest(`/api/users/${u.id}/sso-link/start`, { method: 'POST' });
       setSsoPrelinkResult({ email: u.email, url: data.url, expires_at: data.expires_at });
       await loadUsers();
     } catch (err) {
@@ -585,7 +585,7 @@ export default function Admin() {
   async function handleLoadSsoEvents(u) {
     setError('');
     try {
-      const data = await apiRequest(`/api/users/${u.id}/sso-events`, {}, token);
+      const data = await apiRequest(`/api/users/${u.id}/sso-events`, {});
       setSsoEventsUser(u);
       setSsoEvents(data.events || []);
     } catch (err) {
@@ -599,7 +599,7 @@ export default function Admin() {
       await apiRequest(`/api/users/${u.id}/sso-unlink`, {
         method: 'POST',
         body: JSON.stringify({ reason: 'admin action' }),
-      }, token);
+      });
       await loadUsers();
     } catch (err) {
       setError(err.error || 'Failed to unlink SSO');
@@ -627,7 +627,7 @@ export default function Admin() {
     }
     setIconUploading(true);
     try {
-      const data = await apiUpload('/api/applications/icon-upload', file, token);
+      const data = await apiUpload('/api/applications/icon-upload', file);
       if (data?.icon_url) {
         setForm((f) => ({ ...f, icon_url: data.icon_url }));
       }
@@ -658,11 +658,11 @@ export default function Admin() {
         oidc_redirect_uris: form.sso_mode === 'oidc' ? redirectUris : [],
       };
       if (editing) {
-        await apiRequest(`/api/applications/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) }, token);
+        await apiRequest(`/api/applications/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) });
       } else {
-        await apiRequest('/api/applications', { method: 'POST', body: JSON.stringify(payload) }, token);
+        await apiRequest('/api/applications', { method: 'POST', body: JSON.stringify(payload) });
       }
-      const data = await apiRequest('/api/applications', {}, token);
+      const data = await apiRequest('/api/applications', {});
       setApplications(data.applications || []);
       const wasEditing = !!editing;
       closeAppForm();
@@ -678,7 +678,7 @@ export default function Admin() {
     setError('');
     setSaving(true);
     try {
-      await apiRequest(`/api/applications/${app.id}`, { method: 'DELETE' }, token);
+      await apiRequest(`/api/applications/${app.id}`, { method: 'DELETE' });
       setApplications((prev) => prev.filter((a) => a.id !== app.id));
       setDeleteConfirm(null);
     } catch (err) {

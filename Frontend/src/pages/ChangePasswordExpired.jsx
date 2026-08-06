@@ -21,8 +21,8 @@ export default function ChangePasswordExpired() {
       setError('New password and confirm do not match');
       return;
     }
-    if (newPassword.length < 6) {
-      setError('New password must be at least 6 characters');
+    if (newPassword.length < 12) {
+      setError('New password must be at least 12 characters');
       return;
     }
     setSubmitting(true);
@@ -36,8 +36,8 @@ export default function ChangePasswordExpired() {
           new_password_retype: newPasswordRetype,
         }),
       });
-      if (data.token && data.user) {
-        setSession(data.token, data.user);
+      if (data.user) {
+        setSession(null, data.user);
         navigate('/', { replace: true });
       } else {
         navigate('/login', { state: { message: 'Password updated. Please sign in.' }, replace: true });

@@ -4,10 +4,9 @@ export function getApiUrl(path) {
   return `${API_URL}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
-export async function apiRequest(path, options = {}, token = null) {
+export async function apiRequest(path, options = {}) {
   const url = getApiUrl(path);
   const headers = { 'Content-Type': 'application/json', ...options.headers };
-  if (token) headers.Authorization = `Bearer ${token}`;
   const csrfCookie = document.cookie
     .split(';')
     .map((p) => p.trim())
@@ -26,7 +25,9 @@ export async function apiRequest(path, options = {}, token = null) {
     throw {
       status: 0,
       error: isNetwork
-        ? 'Cannot reach the API. Is the backend running on port 4000? (Check the terminal and http://localhost:4000/health )'
+        ? (import.meta.env.DEV
+          ? 'Cannot reach the API. Is the backend running? (Check http://localhost:4000/health )'
+          : 'Cannot reach the API. Please try again later.')
         : e.message || 'Network error',
     };
   }
@@ -36,12 +37,11 @@ export async function apiRequest(path, options = {}, token = null) {
 }
 
 /** Multipart upload (field name `file`). Do not set Content-Type — browser sets boundary. */
-export async function apiUpload(path, file, token) {
+export async function apiUpload(path, file) {
   const url = getApiUrl(path);
   const formData = new FormData();
   formData.append('file', file);
   const headers = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
   const csrfCookie = document.cookie
     .split(';')
     .map((p) => p.trim())
@@ -57,7 +57,7 @@ export async function apiUpload(path, file, token) {
     throw {
       status: 0,
       error: isNetwork
-        ? 'Cannot reach the API. Is the backend running (e.g. http://localhost:4000)?'
+        ? (import.meta.env.DEV ? 'Cannot reach the API. Is the backend running?' : 'Cannot reach the API. Please try again later.')
         : e.message || 'Network error',
     };
   }

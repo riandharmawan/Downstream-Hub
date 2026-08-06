@@ -5,7 +5,6 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -24,7 +23,6 @@ export function AuthProvider({ children }) {
       body: JSON.stringify({ email, password }),
     });
     if (data.mfa_required || data.magic_link_required) return data;
-    setToken(data.token || null);
     setUser(data.user || null);
     return data;
   };
@@ -34,7 +32,6 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: JSON.stringify({ challenge_id, otp }),
     });
-    setToken(data.token || null);
     setUser(data.user || null);
     return data;
   };
@@ -44,7 +41,6 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: JSON.stringify({ token: rawToken }),
     });
-    setToken(data.token || null);
     setUser(data.user || null);
     return data;
   };
@@ -56,8 +52,7 @@ export function AuthProvider({ children }) {
     });
   };
 
-  const setSession = (newToken, newUser) => {
-    setToken(newToken || null);
+  const setSession = (_newToken, newUser) => {
     setUser(newUser || null);
   };
 
@@ -66,24 +61,22 @@ export function AuthProvider({ children }) {
       method: 'POST',
       body: JSON.stringify({ email, password, password_retype, business_unit_id: business_unit_id || undefined }),
     });
-    setToken(data.token || null);
     setUser(data.user || null);
     return data;
   };
 
   const logout = async () => {
     try {
-      await apiRequest('/api/auth/logout', { method: 'POST' }, token);
+      await apiRequest('/api/auth/logout', { method: 'POST' });
     } catch {
       /* ignore */
     }
-    setToken(null);
     setUser(null);
   };
 
   return (
     <AuthContext.Provider value={{
-      user, token, loading, login, verifyMfa, loginWithMagicToken, resendMagicLink, register, logout, setSession,
+      user, loading, login, verifyMfa, loginWithMagicToken, resendMagicLink, register, logout, setSession,
     }}
     >
       {children}

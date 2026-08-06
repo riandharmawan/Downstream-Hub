@@ -152,22 +152,34 @@ router.post('/icon-upload', authMiddleware, requireAdmin, (req, res, next) => {
   res.status(201).json({ icon_url });
 });
 
+function toPublicAppDto(app) {
+  return {
+    id: app.id,
+    name: app.name,
+    description: app.description,
+    icon_url: app.icon_url,
+    sso_mode: app.sso_mode,
+    created_at: app.created_at,
+    updated_at: app.updated_at,
+  };
+}
+
 // GET /api/applications/for-me — list apps for current user's BU or Global (authenticated)
 router.get('/for-me', authMiddleware, async (req, res) => {
   try {
     const user = await usersDb.getById(pool, req.user.id);
     const buId = user?.business_unit_id ?? null;
     const applications = await applicationsDb.listActive(pool, buId);
-    res.json({ applications });
+    res.json({ applications: applications.map(toPublicAppDto) });
   } catch (err) {
     console.error('List applications for-me error:', err);
     res.status(500).json({ error: 'Failed to list applications' });
   }
 });
 
-// GET /api/applications — list all (authenticated; Admin uses for full catalog)
+// GET /api/applications — list all (Admin only)
 // Optional filter params: ?bu=<uuid>,<uuid>&global=true
-router.get('/', authMiddleware, async (req, res) => {
+router.get('/', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const buParam = req.query.bu ? String(req.query.bu) : '';
     const buIds = buParam ? buParam.split(',').map((s) => s.trim()).filter(Boolean) : [];
@@ -184,8 +196,8 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/applications/:id
-router.get('/:id', authMiddleware, async (req, res) => {
+// GET /api/applications/:id — Admin only
+router.get('/:id', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const app = await applicationsDb.getById(pool, req.params.id);
     if (!app) return res.status(404).json({ error: 'Application not found' });

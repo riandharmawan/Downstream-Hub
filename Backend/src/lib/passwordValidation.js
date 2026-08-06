@@ -7,7 +7,7 @@ function validatePassword(password, policy) {
   if (!password || typeof password !== 'string') {
     return { valid: false, error: 'Password is required' };
   }
-  const minLen = Math.max(6, parseInt(policy.min_password_length, 10) || 6);
+  const minLen = Math.max(12, parseInt(policy.min_password_length, 10) || 12);
   if (password.length < minLen) {
     return { valid: false, error: `Password must be at least ${minLen} characters` };
   }

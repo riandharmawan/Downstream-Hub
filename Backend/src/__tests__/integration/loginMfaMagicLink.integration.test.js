@@ -66,7 +66,7 @@ describe('Login MFA magic link', () => {
 
   runTest('POST /login without trusted device returns magic_link_required', async () => {
     const email = `magic-mfa-${Date.now()}@example.com`;
-    const password = 'MagicMfa1!';
+    const password = 'MagicMfaPass1!';
     await registerUser(email, password);
 
     const agent = request.agent(app);
@@ -84,7 +84,7 @@ describe('Login MFA magic link', () => {
     await passwordPolicyDb.update(pool, { password_expiry_days: 90 });
 
     const email = `magic-expiry-policy-${Date.now()}@example.com`;
-    const password = 'MagicMfa1!';
+    const password = 'MagicMfaPass1!';
     const user = await registerUser(email, password);
     const rawToken = crypto.randomBytes(32).toString('base64url');
     await insertKnownMagicLink(user.id, rawToken);
@@ -98,7 +98,7 @@ describe('Login MFA magic link', () => {
 
   runTest('POST /magic-link/verify issues session and hub_device cookie', async () => {
     const email = `magic-verify-${Date.now()}@example.com`;
-    const password = 'MagicMfa1!';
+    const password = 'MagicMfaPass1!';
     const user = await registerUser(email, password);
     const rawToken = crypto.randomBytes(32).toString('base64url');
     await insertKnownMagicLink(user.id, rawToken);
@@ -110,8 +110,8 @@ describe('Login MFA magic link', () => {
 
     const verify = await agent.post('/api/auth/magic-link/verify').send({ token: rawToken });
     expect(verify.status).toBe(200);
-    expect(verify.body.token).toBeTruthy();
     expect(verify.body.user.email).toBe(email);
+    expect(verify.body.token).toBeUndefined();
 
     const cookies = verify.headers['set-cookie'] || [];
     const deviceCookie = cookies.find((c) => c.startsWith(`${deviceTrust.DEVICE_COOKIE}=`) || c.startsWith('hub_device='));
@@ -123,7 +123,7 @@ describe('Login MFA magic link', () => {
 
   runTest('second login on trusted device bypasses magic link within window', async () => {
     const email = `magic-bypass-${Date.now()}@example.com`;
-    const password = 'MagicMfa1!';
+    const password = 'MagicMfaPass1!';
     const user = await registerUser(email, password);
     const rawToken = crypto.randomBytes(32).toString('base64url');
     await insertKnownMagicLink(user.id, rawToken);
@@ -133,13 +133,14 @@ describe('Login MFA magic link', () => {
 
     const login = await agent.post('/api/auth/login').send({ email, password });
     expect(login.status).toBe(200);
-    expect(login.body.token).toBeTruthy();
+    expect(login.body.user).toBeTruthy();
+    expect(login.body.token).toBeUndefined();
     expect(login.body.magic_link_required).toBeUndefined();
   });
 
   runTest('login without device cookie requires magic link again', async () => {
     const email = `magic-nocookie-${Date.now()}@example.com`;
-    const password = 'MagicMfa1!';
+    const password = 'MagicMfaPass1!';
     const user = await registerUser(email, password);
     const rawToken = crypto.randomBytes(32).toString('base64url');
     await insertKnownMagicLink(user.id, rawToken);
@@ -157,7 +158,7 @@ describe('Login MFA magic link', () => {
 
   runTest('reused magic link token is rejected', async () => {
     const email = `magic-reuse-${Date.now()}@example.com`;
-    const password = 'MagicMfa1!';
+    const password = 'MagicMfaPass1!';
     const user = await registerUser(email, password);
     const rawToken = crypto.randomBytes(32).toString('base64url');
     await insertKnownMagicLink(user.id, rawToken);
@@ -172,7 +173,7 @@ describe('Login MFA magic link', () => {
 
   runTest('expired magic link token is rejected', async () => {
     const email = `magic-expired-${Date.now()}@example.com`;
-    const password = 'MagicMfa1!';
+    const password = 'MagicMfaPass1!';
     const user = await registerUser(email, password);
     const rawToken = crypto.randomBytes(32).toString('base64url');
     await magicLinkDb.invalidatePendingForUser(pool, user.id);
@@ -195,7 +196,7 @@ describe('Login MFA magic link', () => {
     });
 
     const email = `magic-cal-${Date.now()}@example.com`;
-    const password = 'MagicMfa1!';
+    const password = 'MagicMfaPass1!';
     const user = await registerUser(email, password);
 
     const deviceHash = hashToken('test-device-cal');

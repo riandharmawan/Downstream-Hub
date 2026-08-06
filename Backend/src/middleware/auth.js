@@ -35,8 +35,12 @@ async function attachUserFromJwt(token) {
   const payload = jwt.verify(token, JWT_SECRET);
   if (payload.tv === undefined || payload.tv === null) return null;
   const dbTv = await usersDb.getTokenVersion(pool, payload.sub);
-  if (dbTv === null || Number(dbTv) !== Number(payload.tv)) return { stale: true, id: payload.sub, email: payload.email, role: payload.role };
-  return { id: payload.sub, email: payload.email, role: payload.role };
+  if (dbTv === null || Number(dbTv) !== Number(payload.tv)) {
+    return { stale: true, id: payload.sub, email: payload.email, role: payload.role };
+  }
+  const user = await usersDb.getById(pool, payload.sub);
+  if (!user) return null;
+  return { id: user.id, email: user.email, role: user.role };
 }
 
 async function attachUserFromSession(req) {
