@@ -173,7 +173,7 @@ describe('Login MFA magic link', () => {
 
     const audit = await pool.query(
       `SELECT payload_after FROM audit_logs
-       WHERE action_type = 'LOGIN_MFA_MAGIC_LINK_VERIFY_FAILED'
+       WHERE action_type = 'LOGIN_MFA_MAGIC_LINK_FAIL'
          AND target_entity = $1
        ORDER BY created_at DESC LIMIT 1`,
       [email]
@@ -201,7 +201,7 @@ describe('Login MFA magic link', () => {
 
     const audit = await pool.query(
       `SELECT payload_after FROM audit_logs
-       WHERE action_type = 'LOGIN_MFA_MAGIC_LINK_VERIFY_FAILED'
+       WHERE action_type = 'LOGIN_MFA_MAGIC_LINK_FAIL'
          AND target_entity = $1
        ORDER BY created_at DESC LIMIT 1`,
       [email]
@@ -223,7 +223,7 @@ describe('Login MFA magic link', () => {
 
     const audit = await pool.query(
       `SELECT payload_after FROM audit_logs
-       WHERE action_type = 'LOGIN_MFA_MAGIC_LINK_VERIFY_FAILED'
+       WHERE action_type = 'LOGIN_MFA_MAGIC_LINK_FAIL'
          AND target_entity = $1
        ORDER BY created_at DESC LIMIT 1`,
       [email]

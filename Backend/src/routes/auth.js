@@ -211,7 +211,7 @@ async function auditMagicLinkVerifyFailure(req, failure) {
   try {
     await auditLog(client, {
       actorId: userId,
-      actionType: 'LOGIN_MFA_MAGIC_LINK_VERIFY_FAILED',
+      actionType: 'LOGIN_MFA_MAGIC_LINK_FAIL',
       targetEntity: userEmail,
       payloadBefore: null,
       payloadAfter: {
@@ -220,6 +220,8 @@ async function auditMagicLinkVerifyFailure(req, failure) {
       },
       ipAddress: getClientIp(req),
     });
+  } catch (err) {
+    console.error('Magic link verify audit log error:', err.message);
   } finally {
     client.release();
   }
