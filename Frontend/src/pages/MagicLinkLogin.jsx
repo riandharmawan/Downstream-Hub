@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { apiRequest } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { getSsoLoginParams, resumeAfterLogin } from '../lib/ssoReturnTo';
 
 const MAGIC_LINK_INVALID_MESSAGE =
   'This link was replaced by a newer sign-in request. Use the latest email or sign in again.';
@@ -11,6 +12,10 @@ export default function MagicLinkLogin() {
   const [searchParams] = useSearchParams();
   const { loginWithMagicToken } = useAuth();
   const token = useMemo(() => searchParams.get('token') || '', [searchParams]);
+  const { returnTo } = useMemo(
+    () => getSsoLoginParams(searchParams.toString() ? `?${searchParams.toString()}` : ''),
+    [searchParams]
+  );
   const [message, setMessage] = useState('Checking your sign-in link...');
   const [error, setError] = useState('');
 
@@ -31,10 +36,16 @@ export default function MagicLinkLogin() {
         }
         setMessage('Signing you in...');
         await loginWithMagicToken(token);
-        navigate('/', { replace: true });
+        resumeAfterLogin(returnTo, navigate);
       } catch (err) {
         if (err.code === 'PASSWORD_EXPIRED') {
-          navigate('/change-password-expired', { replace: true });
+          navigate('/change-password-expired', {
+            state: {
+              returnTo,
+              clientId: searchParams.get('client_id') || '',
+            },
+            replace: true,
+          });
           return;
         }
         if (err.status === 423 && err.code === 'ACCOUNT_LOCKED') {
@@ -52,7 +63,7 @@ export default function MagicLinkLogin() {
       }
     }
     run();
-  }, [token, loginWithMagicToken, navigate]);
+  }, [token, returnTo, loginWithMagicToken, navigate, searchParams]);
 
   return (
     <div style={styles.page}>

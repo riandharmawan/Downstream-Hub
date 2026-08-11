@@ -15,7 +15,6 @@ const { getClientIp } = require('../middleware/audit');
 const mailer = require('../lib/mailer');
 const { SignJWT, jwtVerify } = require('jose');
 const { loadKeys, hashSha256 } = require('../lib/ssoKeyStore');
-
 const router = express.Router();
 const SSO_EXPIRY_SECONDS = parseInt(process.env.SSO_TOKEN_EXPIRY_SECONDS || '60', 10);
 const API_PUBLIC_URL = (process.env.API_PUBLIC_URL || 'http://localhost:4000').replace(/\/$/, '');
@@ -94,6 +93,13 @@ async function verifyBridgeRef(ref) {
 function parseRedirectUriList(app) {
   if (!Array.isArray(app.oidc_redirect_uris)) return [];
   return app.oidc_redirect_uris.map((x) => String(x || '').trim()).filter(Boolean);
+}
+
+function buildSsoLoginRedirectUrl(req, clientId) {
+  const loginUrl = new URL(`${PUBLIC_APP_URL}/login`);
+  loginUrl.searchParams.set('returnTo', req.originalUrl);
+  if (clientId) loginUrl.searchParams.set('client_id', clientId);
+  return loginUrl.toString();
 }
 
 /**
@@ -263,6 +269,27 @@ router.get('/.well-known/openid-configuration', async (_req, res) => {
   });
 });
 
+/**
+ * GET /api/sso/login-context?client_id=...
+ * Public display context for app-initiated SSO login (name/icon only).
+ */
+router.get('/login-context', async (req, res) => {
+  try {
+    const clientId = String(req.query.client_id || '').trim();
+    if (!clientId) return res.status(400).json({ error: 'client_id required' });
+    const app = await applicationsDb.getByOAuthClientId(pool, clientId);
+    if (!app) return res.status(404).json({ error: 'Application not found' });
+    return res.json({
+      client_id: app.oauth_client_id,
+      app_name: app.name,
+      icon_url: app.icon_url || '',
+    });
+  } catch (err) {
+    console.error('SSO login-context error:', err);
+    return res.status(500).json({ error: 'Failed to load login context' });
+  }
+});
+
 router.get('/authorize', optionalAuth, async (req, res) => {
   try {
     const fromRef = req.query.ref ? await verifyBridgeRef(String(req.query.ref)) : {};
@@ -271,8 +298,10 @@ router.get('/authorize', optionalAuth, async (req, res) => {
       const u = await usersDb.getById(pool, String(fromRef.user_id));
       if (u) actingUser = { id: u.id, email: u.email, role: u.role };
     }
-    if (!actingUser) return res.status(401).send('Authentication required');
     const clientId = String(req.query.client_id || fromRef.client_id || '').trim();
+    if (!actingUser) {
+      return res.redirect(302, buildSsoLoginRedirectUrl(req, clientId));
+    }
     const redirectUri = String(req.query.redirect_uri || fromRef.redirect_uri || '').trim();
     const responseType = String(req.query.response_type || fromRef.response_type || 'code');
     const codeChallenge = String(req.query.code_challenge || fromRef.code_challenge || '').trim();

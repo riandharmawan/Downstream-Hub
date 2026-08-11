@@ -182,6 +182,87 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(res.status).toBe(400);
     });
 
+    test('GET /api/sso/authorize without session redirects to login with returnTo and client_id', async () => {
+      const codeVerifier = toBase64Url(crypto.randomBytes(48));
+      const codeChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
+      const res = await request(app).get('/api/sso/authorize').query({
+        response_type: 'code',
+        client_id: 'test-sso-login-redirect',
+        redirect_uri: 'https://example.com/callback',
+        scope: 'openid profile email',
+        state: 'test-state',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toMatch(/\/login\?/);
+      expect(res.headers.location).toContain('returnTo=');
+      expect(res.headers.location).toContain('client_id=test-sso-login-redirect');
+    });
+
+    test('GET /api/sso/login-context without client_id returns 400', async () => {
+      const res = await request(app).get('/api/sso/login-context');
+      expect(res.status).toBe(400);
+    });
+
+    const runOidcAuthorizeTest = hasDb ? test : test.skip;
+
+    runOidcAuthorizeTest('GET /api/sso/login-context returns app display fields for valid client_id', async () => {
+      const cid = `test-login-context-${Date.now()}`;
+      await pool.query(
+        `INSERT INTO applications (name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        ['Jetty Planning System', 'test', '/uploads/app-icons/jps.png', 'https://example.com/app', null, cid, ['https://example.com/callback'], 'oidc']
+      );
+      const res = await request(app).get('/api/sso/login-context').query({ client_id: cid });
+      expect(res.status).toBe(200);
+      expect(res.body.client_id).toBe(cid);
+      expect(res.body.app_name).toBe('Jetty Planning System');
+      expect(res.body.icon_url).toBe('/uploads/app-icons/jps.png');
+    });
+
+    runOidcAuthorizeTest('GET /api/sso/login-context returns 404 for unknown client_id', async () => {
+      const res = await request(app).get('/api/sso/login-context').query({ client_id: 'nonexistent-client-id' });
+      expect(res.status).toBe(404);
+    });
+
+    runOidcAuthorizeTest('GET /api/sso/authorize with auth redirects to registered redirect_uri with code', async () => {
+      const { rows: userRows } = await pool.query(
+        'SELECT id, email FROM users WHERE deleted_at IS NULL ORDER BY email LIMIT 1'
+      );
+      if (!userRows.length) return;
+      const token = await bearerTokenForUser(pool, userRows[0].id);
+
+      const cid = `test-authorize-auth-${Date.now()}`;
+      const redirectUri = 'https://example.com/sso-callback';
+      await pool.query(
+        `INSERT INTO applications (name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        ['Authorize Test App', 'test', '', 'https://example.com/app', null, cid, [redirectUri], 'oidc']
+      );
+
+      const codeVerifier = toBase64Url(crypto.randomBytes(48));
+      const codeChallenge = toBase64Url(crypto.createHash('sha256').update(codeVerifier).digest());
+      const res = await request(app)
+        .get('/api/sso/authorize')
+        .query({
+          response_type: 'code',
+          client_id: cid,
+          redirect_uri: redirectUri,
+          scope: 'openid profile email',
+          state: 'state-123',
+          code_challenge: codeChallenge,
+          code_challenge_method: 'S256',
+        })
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toMatch(/^https:\/\/example\.com\/sso-callback\?/);
+      const callbackUrl = new URL(res.headers.location);
+      expect(callbackUrl.searchParams.get('code')).toBeTruthy();
+      expect(callbackUrl.searchParams.get('state')).toBe('state-123');
+    });
+
     const runOidcTokenTest = hasDb ? test : test.skip;
 
     runOidcTokenTest('POST /api/sso/token id_token has email_verified true when hub_oidc_email_verified_at is set', async () => {

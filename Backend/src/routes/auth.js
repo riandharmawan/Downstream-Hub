@@ -25,6 +25,7 @@ const deviceTrust = require('../lib/deviceTrust');
 const { authMiddleware } = require('../middleware/auth');
 const { auditLog, getClientIp } = require('../middleware/audit');
 const mailer = require('../lib/mailer');
+const { isSafeSsoReturnTo } = require('../lib/ssoReturnTo');
 
 const router = express.Router();
 const SESSION_COOKIE = process.env.AUTH_SESSION_COOKIE || 'hub_session';
@@ -145,7 +146,7 @@ async function trustDeviceFromRequest(req, res, user) {
   return deviceHash;
 }
 
-async function sendLoginMagicLink(req, user) {
+async function sendLoginMagicLink(req, user, { returnTo, clientId } = {}) {
   await magicLinkDb.invalidatePendingForUser(pool, user.id);
   const rawToken = crypto.randomBytes(32).toString('base64url');
   const tokenHash = hashToken(rawToken);
@@ -159,7 +160,15 @@ async function sendLoginMagicLink(req, user) {
     requestIp: getClientIp(req),
     pendingLoginHash,
   });
-  const loginUrl = `${publicAppBase()}/magic-link-login?token=${encodeURIComponent(rawToken)}`;
+  const loginUrlObj = new URL(`${publicAppBase()}/magic-link-login`);
+  loginUrlObj.searchParams.set('token', rawToken);
+  if (returnTo && isSafeSsoReturnTo(returnTo)) {
+    loginUrlObj.searchParams.set('returnTo', returnTo);
+  }
+  if (clientId) {
+    loginUrlObj.searchParams.set('client_id', String(clientId).trim());
+  }
+  const loginUrl = loginUrlObj.toString();
   try {
     await mailer.sendLoginMagicLinkEmail({
       to: user.email,
@@ -434,10 +443,20 @@ router.post('/register', registerLimit, async (req, res) => {
   }
 });
 
+function parseSsoResumeFromBody(body) {
+  const returnTo = String(body?.return_to || '').trim();
+  const clientId = String(body?.client_id || '').trim();
+  return {
+    returnTo: returnTo && isSafeSsoReturnTo(returnTo) ? returnTo : null,
+    clientId: clientId || null,
+  };
+}
+
 // POST /api/auth/login
 router.post('/login', loginLimit, async (req, res) => {
   try {
     const { email, password } = req.body || {};
+    const ssoResume = parseSsoResumeFromBody(req.body);
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
@@ -481,7 +500,7 @@ router.post('/login', loginLimit, async (req, res) => {
         return res.json(session);
       }
 
-      const { pendingId, expiresIn } = await sendLoginMagicLink(req, user);
+      const { pendingId, expiresIn } = await sendLoginMagicLink(req, user, ssoResume);
       return res.status(202).json({
         magic_link_required: true,
         pending_id: pendingId,
@@ -641,6 +660,7 @@ router.post('/magic-link/verify', magicLinkVerifyLimit, async (req, res) => {
 router.post('/magic-link/resend', magicLinkResendLimit, loginLimit, async (req, res) => {
   try {
     const { email, password, pending_id: pendingId } = req.body || {};
+    const ssoResume = parseSsoResumeFromBody(req.body);
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
@@ -666,7 +686,7 @@ router.post('/magic-link/resend', magicLinkResendLimit, loginLimit, async (req, 
       }
     }
 
-    const { pendingId: newPendingId, expiresIn } = await sendLoginMagicLink(req, user);
+    const { pendingId: newPendingId, expiresIn } = await sendLoginMagicLink(req, user, ssoResume);
     return res.status(202).json({
       magic_link_required: true,
       pending_id: newPendingId,

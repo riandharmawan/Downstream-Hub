@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
+import { resumeAfterLogin } from '../lib/ssoReturnTo';
 
 export default function ChangePasswordExpired() {
   const location = useLocation();
   const navigate = useNavigate();
   const { setSession } = useAuth();
+  const returnTo = location.state?.returnTo || '';
   const [email, setEmail] = useState(location.state?.email || '');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -38,7 +40,7 @@ export default function ChangePasswordExpired() {
       });
       if (data.user) {
         setSession(null, data.user);
-        navigate('/', { replace: true });
+        resumeAfterLogin(returnTo, navigate);
       } else {
         navigate('/login', { state: { message: 'Password updated. Please sign in.' }, replace: true });
       }

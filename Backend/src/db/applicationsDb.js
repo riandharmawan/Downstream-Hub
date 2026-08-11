@@ -170,6 +170,16 @@ async function getByIdForUpdate(db, id) {
   return rows[0] || null;
 }
 
+async function getByOAuthClientId(db, clientId) {
+  const { rows } = await db.query(
+    `SELECT id, name, icon_url, oauth_client_id, sso_mode
+     FROM applications
+     WHERE oauth_client_id = $1 AND deleted_at IS NULL AND sso_mode = 'oidc'`,
+    [clientId]
+  );
+  return rows[0] || null;
+}
+
 async function create(db, { name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode }) {
   const { rows } = await db.query(
     `INSERT INTO applications (name, description, icon_url, target_url, target_bu_id, oauth_client_id, oidc_redirect_uris, sso_mode)
@@ -210,6 +220,7 @@ module.exports = {
   listAllWithBuNameFiltered,
   getById,
   getByIdForUpdate,
+  getByOAuthClientId,
   create,
   update,
   softDelete,

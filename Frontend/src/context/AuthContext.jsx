@@ -28,10 +28,10 @@ export function AuthProvider({ children }) {
     return undefined;
   }, [location.pathname]);
 
-  const login = async (email, password) => {
+  const login = async (email, password, extras = {}) => {
     const data = await apiRequest('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, ...extras }),
     });
     if (data.mfa_required || data.magic_link_required) return data;
     setUser(data.user || null);
@@ -56,10 +56,10 @@ export function AuthProvider({ children }) {
     return data;
   };
 
-  const resendMagicLink = async (email, password, pending_id) => {
+  const resendMagicLink = async (email, password, pending_id, extras = {}) => {
     return apiRequest('/api/auth/magic-link/resend', {
       method: 'POST',
-      body: JSON.stringify({ email, password, pending_id }),
+      body: JSON.stringify({ email, password, pending_id, ...extras }),
     });
   };
 

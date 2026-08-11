@@ -217,6 +217,11 @@ Use discovery to confirm `issuer` and endpoint URLs match your `OIDC_ISSUER`.
 - Blank page on OIDC callback (SPA app)
   - Nginx is serving `index.html` instead of proxying the callback path to your backend. See [SSO-OIDC-JPS-DEBUG-HANDOFF.md](./SSO-OIDC-JPS-DEBUG-HANDOFF.md).
 
+- Plain text **Authentication required** on `/api/sso/authorize` (app-initiated SSO)
+  - **Before fix:** Hub returned `401` when the user was not already logged in.
+  - **Expected:** Hub redirects to `/login?returnTo=...&client_id=...`, shows *Sign in to continue to &lt;App Name&gt;*, then resumes the OIDC authorize request and redirects back to your app's callback URL.
+  - User must log in on the **same Hub origin** as `OIDC_ISSUER` (e.g. `http://test-dwshub.kpndomain.com`, not a different host). See [Guide/STAGING-PROXY-SERVER-CONFIG.md](./Guide/STAGING-PROXY-SERVER-CONFIG.md).
+
 - Discovery `issuer` or endpoints show wrong host (e.g. `172.28.92.57:4000`)
   - Hub operator must set `SSO_ISSUER` and `API_PUBLIC_URL` to the public URL integrators use (staging: `http://172.28.92.56:3010`).
 
