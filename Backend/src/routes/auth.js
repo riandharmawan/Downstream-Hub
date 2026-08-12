@@ -20,7 +20,7 @@ const authSessionsDb = require('../db/authSessionsDb');
 const mfaDb = require('../db/mfaDb');
 const magicLinkDb = require('../db/magicLinkDb');
 const ssoLinkService = require('../services/ssoLinkService');
-const { validatePassword } = require('../lib/passwordValidation');
+const { validatePassword, passwordRequirementsFromPolicy } = require('../lib/passwordValidation');
 const deviceTrust = require('../lib/deviceTrust');
 const { authMiddleware } = require('../middleware/auth');
 const { auditLog, getClientIp } = require('../middleware/audit');
@@ -376,6 +376,17 @@ const magicLinkVerifyLimit = rateLimit({
   message: { error: 'Too many verification attempts. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
+});
+
+// GET /api/auth/password-requirements — public password rules for forms
+router.get('/password-requirements', async (req, res) => {
+  try {
+    const policy = await passwordPolicyDb.get(pool);
+    res.json(passwordRequirementsFromPolicy(policy));
+  } catch (err) {
+    console.error('Password requirements error:', err);
+    res.status(500).json({ error: 'Failed to load password requirements' });
+  }
 });
 
 // GET /api/auth/registration-options — only when open registration is enabled
