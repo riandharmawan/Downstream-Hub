@@ -3,8 +3,12 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
 import HubLogo from '../components/HubLogo';
+import usePasswordRequirements from '../hooks/usePasswordRequirements';
+import { passwordLengthHint } from '../lib/passwordRequirements';
 
 export default function Register() {
+  const passwordRequirements = usePasswordRequirements();
+  const minPasswordLength = passwordRequirements?.min_password_length ?? 6;
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passwordRetype, setPasswordRetype] = useState('');
@@ -28,8 +32,8 @@ export default function Register() {
       setError('Password and confirm password do not match');
       return;
     }
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
+    if (password.length < minPasswordLength) {
+      setError(`Password must be at least ${minPasswordLength} characters`);
       return;
     }
     setSubmitting(true);
@@ -64,7 +68,7 @@ export default function Register() {
           />
           <input
             type="password"
-            placeholder="Password (min 6 characters)"
+            placeholder={passwordLengthHint(minPasswordLength)}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required

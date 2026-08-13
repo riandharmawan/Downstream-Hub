@@ -3,11 +3,15 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
 import { resumeAfterLogin } from '../lib/ssoReturnTo';
+import usePasswordRequirements from '../hooks/usePasswordRequirements';
+import { passwordLengthHint } from '../lib/passwordRequirements';
 
 export default function ChangePasswordExpired() {
   const location = useLocation();
   const navigate = useNavigate();
   const { setSession } = useAuth();
+  const passwordRequirements = usePasswordRequirements();
+  const minPasswordLength = passwordRequirements?.min_password_length ?? 6;
   const returnTo = location.state?.returnTo || '';
   const [email, setEmail] = useState(location.state?.email || '');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -23,8 +27,8 @@ export default function ChangePasswordExpired() {
       setError('New password and confirm do not match');
       return;
     }
-    if (newPassword.length < 12) {
-      setError('New password must be at least 12 characters');
+    if (newPassword.length < minPasswordLength) {
+      setError(`New password must be at least ${minPasswordLength} characters`);
       return;
     }
     setSubmitting(true);
@@ -78,7 +82,7 @@ export default function ChangePasswordExpired() {
           />
           <input
             type="password"
-            placeholder="New password (min 6 characters)"
+            placeholder={passwordLengthHint(minPasswordLength, 'New password')}
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             required

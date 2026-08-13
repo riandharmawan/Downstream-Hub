@@ -82,16 +82,16 @@ describe('API Integration (TEST-PLAN)', () => {
       expect(res.body.error).toMatch(/invalid email format/i);
     });
 
-    test('POST /api/auth/register — password length < 12 returns 400', async () => {
+    test('POST /api/auth/register — password shorter than policy minimum returns 400', async () => {
       const res = await request(app)
         .post('/api/auth/register')
         .send({
           email: 'test@example.com',
-          password: '12345678901',
-          password_retype: '12345678901',
+          password: '12345',
+          password_retype: '12345',
         });
       expect([400, 403, 500]).toContain(res.status);
-      if (res.status === 400) expect(res.body.error).toMatch(/at least 12 characters/i);
+      if (res.status === 400) expect(res.body.error).toMatch(/at least \d+ characters/i);
     });
 
     test('POST /api/auth/login — missing credentials returns 400', async () => {

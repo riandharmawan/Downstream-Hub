@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { apiRequest } from '../api';
+import usePasswordRequirements from '../hooks/usePasswordRequirements';
+import { passwordLengthHint } from '../lib/passwordRequirements';
 
 export default function ResetPassword() {
+  const passwordRequirements = usePasswordRequirements();
+  const minPasswordLength = passwordRequirements?.min_password_length ?? 6;
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token') || '';
   const navigate = useNavigate();
@@ -85,12 +89,12 @@ export default function ResetPassword() {
             {error && <div style={styles.error}>{error}</div>}
             <input
               type="password"
-              placeholder="New password"
+              placeholder={passwordLengthHint(minPasswordLength, 'New password')}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               autoComplete="new-password"
-              minLength={6}
+              minLength={minPasswordLength}
               style={styles.input}
             />
             <input

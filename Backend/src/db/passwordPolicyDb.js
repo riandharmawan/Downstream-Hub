@@ -2,9 +2,11 @@
  * Password policy (single row). password_expiry_days, complexity, history, lockout.
  * New columns have defaults for backward compatibility.
  */
+const { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } = require('../lib/passwordValidation');
+
 const DEFAULTS = {
   password_expiry_days: 0,
-  min_password_length: 12,
+  min_password_length: MIN_PASSWORD_LENGTH,
   require_uppercase: true,
   require_lowercase: true,
   require_number: true,
@@ -58,7 +60,10 @@ async function update(db, payload) {
     values.push(days);
   }
   if (payload.min_password_length !== undefined) {
-    const v = Math.max(12, Math.min(128, parseInt(String(payload.min_password_length), 10) || 12));
+    const v = Math.max(
+      MIN_PASSWORD_LENGTH,
+      Math.min(MAX_PASSWORD_LENGTH, parseInt(String(payload.min_password_length), 10) || MIN_PASSWORD_LENGTH)
+    );
     updates.push(`min_password_length = $${idx++}`);
     values.push(v);
   }

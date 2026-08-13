@@ -2,9 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiRequest } from '../api';
+import usePasswordRequirements from '../hooks/usePasswordRequirements';
+import { passwordLengthHint } from '../lib/passwordRequirements';
 
 export default function ChangePassword() {
   const { user, logout } = useAuth();
+  const passwordRequirements = usePasswordRequirements();
+  const minPasswordLength = passwordRequirements?.min_password_length ?? 6;
   const [searchParams] = useSearchParams();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -80,8 +84,8 @@ export default function ChangePassword() {
       setError('New password and confirm do not match');
       return;
     }
-    if (newPassword.length < 12) {
-      setError('New password must be at least 12 characters');
+    if (newPassword.length < minPasswordLength) {
+      setError(`New password must be at least ${minPasswordLength} characters`);
       return;
     }
     setSubmitting(true);
@@ -182,7 +186,7 @@ export default function ChangePassword() {
             />
             <input
               type="password"
-              placeholder="New password (min 12 characters)"
+              placeholder={passwordLengthHint(minPasswordLength, 'New password')}
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               required
